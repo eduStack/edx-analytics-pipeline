@@ -1,4 +1,4 @@
-Open edX Data Pipeline
+Open edX Data Pipeline(small/middle scale version)
 ======================
 A data pipeline for analyzing Open edX data. This is a batch analysis engine that is capable of running complex data processing workflows.
 

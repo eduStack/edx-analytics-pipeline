@@ -268,11 +268,11 @@ def get_course_id(event, from_url=False):
     # Get the course_id from the data, and validate.
     course_id = opaque_key_util.normalize_course_id(event_context.get('course_id', ''))
     if course_id:
-        if opaque_key_util.is_valid_course_id(course_id):
-            return course_id
-        else:
-            log.error("encountered event with bogus course_id: %s", event)
-            return None
+        #if opaque_key_util.is_valid_course_id(course_id):
+        return course_id
+        # else:
+        #     log.error("encountered event with bogus course_id: %s", event)
+        #     return None
 
     # Try to get the course_id from the URLs in `event_type` (for implicit
     # server events) and `page` (for browser events).

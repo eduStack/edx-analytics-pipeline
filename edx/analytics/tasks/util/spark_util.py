@@ -53,10 +53,10 @@ def get_course_id(event_context, from_url=False):
     # Get the course_id from the data, and validate.
     course_id = opaque_key_util.normalize_course_id(get_key_value_from_event(event_context, 'course_id', ''))
     if course_id:
-        if opaque_key_util.is_valid_course_id(course_id):
-            return course_id
-        else:
-            return ''  # we'll filter out empty course since string is expected
+        #if opaque_key_util.is_valid_course_id(course_id):
+        return course_id
+        # else:
+        #     return ''  # we'll filter out empty course since string is expected
 
     # TODO : make it work with url as well
     # Try to get the course_id from the URLs in `event_type` (for implicit

@@ -1,3 +1,4 @@
+PIP_MIRROR = https://pypi.tuna.tsinghua.edu.cn/simple
 
 .PHONY:	requirements test test-requirements .tox upgrade
 
@@ -9,8 +10,8 @@ install: requirements uninstall
 	python setup.py install --force
 
 bootstrap: uninstall
-	pip install -U -r requirements/pre.txt
-	pip install -U -r requirements/base.txt --no-cache-dir
+	pip install -U -i $(PIP_MIRROR) -r requirements/pre.txt
+	pip install -U -i $(PIP_MIRROR) -r requirements/base.txt --no-cache-dir
 	python setup.py install --force
 
 develop: requirements develop-local
@@ -34,12 +35,12 @@ else
 endif
 
 requirements:
-	pip install -U -r requirements/pre.txt
-	pip install -U -r requirements/default.txt --no-cache-dir --upgrade-strategy only-if-needed
-	pip install -U -r requirements/extra.txt --no-cache-dir
+	pip install -U -i $(PIP_MIRROR) -r requirements/pre.txt
+	pip install -U -i $(PIP_MIRROR) -r requirements/default.txt --no-cache-dir --upgrade-strategy only-if-needed
+	pip install -U -i $(PIP_MIRROR) -r requirements/extra.txt --no-cache-dir
 
 test-requirements: requirements
-	pip install -U -r requirements/test.txt --no-cache-dir --upgrade-strategy only-if-needed
+	pip install -U -i $(PIP_MIRROR) -r requirements/test.txt --no-cache-dir --upgrade-strategy only-if-needed
 
 upgrade: ## update the requirements/*.txt files with the latest packages satisfying requirements/*.in
 	pip-compile --upgrade -o requirements/base.txt requirements/base.in
@@ -87,9 +88,9 @@ coverage-local: test-local
 coverage: test coverage-local
 
 docs-requirements:
-	pip install -U -r requirements/pre.txt
-	pip install -U -r requirements/docs.txt --no-cache-dir --upgrade-strategy only-if-needed
-	pip install -U -r requirements/extra.txt --no-cache-dir
+	pip install -U -i $(PIP_MIRROR) -r requirements/pre.txt
+	pip install -U -i $(PIP_MIRROR) -r requirements/docs.txt --no-cache-dir --upgrade-strategy only-if-needed
+	pip install -U -i $(PIP_MIRROR) -r requirements/extra.txt --no-cache-dir
 	python setup.py install --force
 
 docs-local:

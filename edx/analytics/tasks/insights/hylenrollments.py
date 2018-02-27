@@ -1,0 +1,231 @@
+"""Compute metrics related to user enrollments in courses"""
+
+import datetime
+import logging
+
+import luigi.task
+
+from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
+from edx.analytics.tasks.common.pathutil import (
+    EventLogSelectionDownstreamMixin
+)
+from edx.analytics.tasks.util.decorators import workflow_entry_point
+from edx.analytics.tasks.util.record import DateField, IntegerField, Record, StringField
+
+log = logging.getLogger(__name__)
+DEACTIVATED = 'edx.course.enrollment.deactivated'
+ACTIVATED = 'edx.course.enrollment.activated'
+MODE_CHANGED = 'edx.course.enrollment.mode_changed'
+ENROLLED = 1
+UNENROLLED = 0
+
+
+class OverwriteMysqlDownstreamMixin(object):
+    """This mixin covers controls when we have both mysql objects eligible for overwriting."""
+
+    overwrite_mysql = luigi.parameter.BoolParameter(
+        default=True,
+        description='Whether or not to overwrite the MySQL output objects; set to True by default.',
+        significant=True
+    )
+
+
+class CourseEnrollmentDownstreamMixin(EventLogSelectionDownstreamMixin):
+    """All parameters needed to run the CourseEnrollmentTask task."""
+
+    # Make the interval be optional:
+    interval = luigi.DateIntervalParameter(
+        default=None,
+        description='The range of dates to extract enrollments events for. '
+                    'If not specified, `interval_start` and `interval_end` are used to construct the `interval`.',
+    )
+
+    # Define optional parameters, to be used if 'interval' is not defined.
+    interval_start = luigi.DateParameter(
+        config_path={'section': 'enrollments', 'name': 'interval_start'},
+        significant=False,
+        description='The start date to extract enrollments events for.  Ignored if `interval` is provided.',
+    )
+    interval_end = luigi.DateParameter(
+        default=datetime.datetime.utcnow().date(),
+        significant=False,
+        description='The end date to extract enrollments events for.  Ignored if `interval` is provided. '
+                    'Default is today, UTC.',
+    )
+
+    overwrite_n_days = luigi.IntParameter(
+        config_path={'section': 'enrollments', 'name': 'overwrite_n_days'},
+        significant=False,
+        description='This parameter is used by CourseEnrollmentTask which will overwrite course enrollment '
+                    ' events for the most recent n days.'
+    )
+
+    @property
+    def query_date(self):
+        """We want to store demographics breakdown from the enrollment numbers of most recent day only."""
+        query_date = self.interval.date_b - datetime.timedelta(days=1)
+        return query_date.isoformat()
+
+    def __init__(self, *args, **kwargs):
+        super(CourseEnrollmentDownstreamMixin, self).__init__(*args, **kwargs)
+
+        if not self.interval:
+            self.interval = luigi.date_interval.Custom(self.interval_start, self.interval_end)
+
+
+# class EnrollmentDailyDataTask(CourseEnrollmentDownstreamMixin, OverwriteMysqlQueryDataTask):  # pragma: no cover
+#     """Aggregates data from `course_enrollment` into `course_enrollment_daily` Hive table."""
+#
+
+#
+#     def requires(self):  # pragma: no cover
+#         for requirement in super(EnrollmentDailyDataTask, self).requires():
+#             yield requirement
+#
+#         # the process that generates the source table used by this query
+#         yield (
+#             CourseEnrollmentTask(
+#                 source=self.source,
+#                 interval=self.interval,
+#                 pattern=self.pattern,
+#                 overwrite_n_days=self.overwrite_n_days,
+#             )
+#         )
+
+class EnrollmentDailyDataTask(CourseEnrollmentDownstreamMixin, luigi.Task):  # pragma: no cover
+    """Aggregates data from `course_enrollment` into `course_enrollment_daily` Hive table."""
+
+    def output(self):
+        return "/tmp/test.result"
+
+
+class OverwriteMysqlDownstreamMixin(object):
+    """This mixin covers controls when we have both hive and mysql objects eligible for overwriting."""
+
+    overwrite_mysql = luigi.BooleanParameter(
+        default=False,
+        description='Whether or not to overwrite the MySQL output objects; set to False by default.',
+        significant=False
+    )
+
+
+class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
+                               IncrementalMysqlInsertTask):
+    """
+    A history of the number of students enrolled in each course at the end of each day.
+
+    During operations: The object at insert_source_task is opened and each row is treated as a row to be inserted.
+    At the end of this task data has been written to MySQL.  Overwrite functionality is complex and configured through
+    the OverwriteHiveAndMysqlDownstreamMixin, so we default the standard overwrite parameter to None.
+    """
+    overwrite = None
+
+    def __init__(self, *args, **kwargs):
+        super(EnrollmentDailyMysqlTask, self).__init__(*args, **kwargs)
+        self.overwrite = self.overwrite_mysql
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'course_enrollment_daily'
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        query = """
+            SELECT
+                ce.course_id,
+                ce.`date`,
+                SUM(ce.at_end),
+                COUNT(ce.user_id)
+            FROM course_enrollment ce
+            GROUP BY
+                ce.course_id,
+                ce.`date`
+        """.format(date=self.query_date)
+        return query
+
+    def rows(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        # todo query_result => data
+        data = [
+            ['courseid', '2018-02-27', 10, 100],
+            ['courseid22', '2018-02-28', 123, 140]
+        ]
+        for row in data:
+            yield row
+
+    @property
+    def columns(self):
+        return EnrollmentDailyRecord.get_sql_schema()
+
+    @property
+    def indexes(self):
+        return [
+            ('course_id',),
+            # Note that the order here is extremely important. The API query pattern needs to filter first by course and
+            # then by date.
+            ('course_id', 'date'),
+        ]
+
+    @property
+    def record_filter(self):
+        pass
+
+
+class EnrollmentDailyRecord(Record):
+    """Summarizes a course's enrollment by date."""
+    course_id = StringField(length=255, nullable=False, description='The course the learners are enrolled in.')
+    date = DateField(nullable=False, description='Enrollment date.')
+    count = IntegerField(description='The number of learners in the course on this date.')
+    cumulative_count = IntegerField(description='The count of learners that ever enrolled in this course on or before '
+                                                'this date.')
+
+
+@workflow_entry_point
+class HylImportEnrollmentsIntoMysql(OverwriteMysqlDownstreamMixin, luigi.WrapperTask):
+    """Import all breakdowns of enrollment into MySQL."""
+
+    def requires(self):
+        enrollment_kwargs = {
+            'source': self.source,
+            'interval': self.interval,
+            'pattern': self.pattern,
+            'overwrite_n_days': self.overwrite_n_days,
+            'overwrite_mysql': self.overwrite_mysql,
+        }
+        #
+        # course_summary_kwargs = dict({
+        #     'date': self.date,
+        #     'api_root_url': self.api_root_url,
+        #     'api_page_size': self.api_page_size,
+        #     'enable_course_catalog': self.enable_course_catalog,
+        # }, **enrollment_kwargs)
+        #
+        # course_enrollment_summary_args = dict({
+        #     'source': self.source,
+        #     'interval': self.interval,
+        #     'pattern': self.pattern,
+        #     'overwrite_n_days': self.overwrite_n_days,
+        #     'overwrite': self.overwrite_hive,
+        # })
+
+        yield [
+            # TestTask1(**test1_kwargs),
+            # TestTask2(**test2_kwargs)
+            # The S3 data generated by this job is used by the load_warehouse_bigquery and
+            # load_internal_reporting_user_course jobs.
+            # CourseEnrollmentSummaryPartitionTask(**course_enrollment_summary_args),
+            #
+            # EnrollmentByGenderMysqlTask(**enrollment_kwargs),
+            # EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
+            # EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
+            EnrollmentDailyMysqlTask(**enrollment_kwargs),
+            # CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
+        ]
+        # if self.enable_course_catalog:
+        #     yield CourseProgramMetadataInsertToMysqlTask(**course_summary_kwargs)
+
+
+if __name__ == '__main__':
+    luigi.run(['HylImportEnrollmentsIntoMysql', '--overwrite-mysql', '--local-scheduler'])

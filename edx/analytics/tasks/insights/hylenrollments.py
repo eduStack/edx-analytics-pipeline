@@ -23,7 +23,7 @@ UNENROLLED = 0
 class OverwriteMysqlDownstreamMixin(object):
     """This mixin covers controls when we have both mysql objects eligible for overwriting."""
 
-    overwrite_mysql = luigi.parameter.BoolParameter(
+    overwrite_mysql = luigi.BooleanParameter(
         default=True,
         description='Whether or not to overwrite the MySQL output objects; set to True by default.',
         significant=True

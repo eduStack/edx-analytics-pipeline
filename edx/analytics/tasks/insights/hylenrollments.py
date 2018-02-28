@@ -143,7 +143,8 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
     @property
     def record_filter(self):
         if self.overwrite:
-            return '1=1'
+            return """`date` >= '{}' AND `date` <= '{}'""".format(self.interval.date_a.isoformat(),
+                                                                  self.interval.date_b.isoformat())
         else:
             return None
         # return """`date=`=`query_date`""".format(query_date=self.query_date)
@@ -182,16 +183,17 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
                 SUM(ce.at_end),
                 COUNT(ce.user_id)
             FROM course_enrollment ce
+            WHERE `date` >= '{}' AND `date` <= '{}'
             GROUP BY
                 ce.course_id,
                 ce.`date`
-        """.format(date=self.query_date)
+        """.format(self.interval.date_a.isoformat(), self.interval.date_b.isoformat())
         return query
 
     def rows(self):
         query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
                                                query=self.insert_query)
-        log.info('query_sql=[{}]'.format(self.insert_query))
+        log.info('query_sql = [{}]'.format(self.insert_query))
         for row in query_result:
             yield row
 
@@ -211,7 +213,8 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
     @property
     def record_filter(self):
         if self.overwrite:
-            return '1=1'
+            return """`date` >= '{}' AND `date` <= '{}'""".format(self.interval.date_a.isoformat(),
+                                                                  self.interval.date_b.isoformat())
         else:
             return None
 

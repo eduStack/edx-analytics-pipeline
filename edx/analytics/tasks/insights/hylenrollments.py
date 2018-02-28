@@ -73,13 +73,6 @@ class CourseEnrollmentDownstreamMixin(EventLogSelectionDownstreamMixin):
             self.interval = luigi.date_interval.Custom(self.interval_start, self.interval_end)
 
 
-class EnrollmentDailyDataTask(CourseEnrollmentDownstreamMixin, luigi.Task):  # pragma: no cover
-    """Aggregates data from `course_enrollment` into `course_enrollment_daily` Hive table."""
-
-    def output(self):
-        return "/tmp/test.result"
-
-
 class CourseEnrollmentRecord(Record):
     """A user's enrollment history."""
     date = DateField(nullable=False, description='Enrollment date.')
@@ -91,14 +84,13 @@ class CourseEnrollmentRecord(Record):
     mode = StringField(length=255, description='')
 
 
-class OverwriteMysqlDownstreamMixin(object):
-    """This mixin covers controls when we have both hive and mysql objects eligible for overwriting."""
-
-    overwrite_mysql = luigi.BooleanParameter(
-        default=False,
-        description='Whether or not to overwrite the MySQL output objects; set to False by default.',
-        significant=False
-    )
+class EnrollmentDailyRecord(Record):
+    """Summarizes a course's enrollment by date."""
+    course_id = StringField(length=255, nullable=False, description='The course the learners are enrolled in.')
+    date = DateField(nullable=False, description='Enrollment date.')
+    count = IntegerField(description='The number of learners in the course on this date.')
+    cumulative_count = IntegerField(description='The count of learners that ever enrolled in this course on or before '
+                                                'this date.')
 
 
 class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, IncrementalMysqlInsertTask):
@@ -150,17 +142,11 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
 
     @property
     def record_filter(self):
-        return '1=1'
+        if self.overwrite:
+            return '1=1'
+        else:
+            return None
         # return """`date=`=`query_date`""".format(query_date=self.query_date)
-
-
-class EnrollmentDailyRecord(Record):
-    """Summarizes a course's enrollment by date."""
-    course_id = StringField(length=255, nullable=False, description='The course the learners are enrolled in.')
-    date = DateField(nullable=False, description='Enrollment date.')
-    count = IntegerField(description='The number of learners in the course on this date.')
-    cumulative_count = IntegerField(description='The count of learners that ever enrolled in this course on or before '
-                                                'this date.')
 
 
 class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
@@ -224,8 +210,10 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
 
     @property
     def record_filter(self):
-        return '1=1'
-        # return """`date=`=`query_date`""".format(query_date=self.query_date)
+        if self.overwrite:
+            return '1=1'
+        else:
+            return None
 
     def requires(self):
         for requirement in super(EnrollmentDailyMysqlTask, self).requires().itervalues():

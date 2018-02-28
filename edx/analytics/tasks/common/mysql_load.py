@@ -502,16 +502,17 @@ class IncrementalMysqlInsertTask(MysqlInsertTask):
 
             # Use "DELETE" instead of TRUNCATE since TRUNCATE forces an implicit commit before it executes which would
             # commit the currently open transaction before continuing with the copy.
-            query = "DELETE FROM {table} WHERE {record_filter}".format(
-                table=self.table,
-                record_filter=self.record_filter
-            )
-            log.debug(query)
-            connection.cursor().execute(query)
+            if self.record_filter is not None:
+                query = "DELETE FROM {table} WHERE {record_filter}".format(
+                    table=self.table,
+                    record_filter=self.record_filter
+                )
+                log.debug(query)
+                connection.cursor().execute(query)
 
     @property
     def record_filter(self):
         """
         A string that specifies the data to overwrite, this will be the entire WHERE clause of the generated query.
         """
-        raise NotImplementedError
+        return None

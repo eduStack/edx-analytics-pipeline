@@ -204,7 +204,7 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
         """
         if self.output_target is None:
             self.output_target = CredentialFileMysqlTarget(
-                credentials_target=self.input()['credentials'],
+                credentials_target=self.required_tasks['credentials'].output(),
                 database_name=self.database,
                 table=self.table,
                 update_id=self.update_id()

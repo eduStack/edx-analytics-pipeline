@@ -18,6 +18,7 @@ try:
     import mysql.connector
     from mysql.connector.errors import ProgrammingError
     from mysql.connector import errorcode
+
     mysql_client_available = True
 except ImportError:
     log.warn('Unable to import mysql client libraries')
@@ -58,9 +59,10 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
     def requires(self):
         if self.required_tasks is None:
             self.required_tasks = {
-                'credentials': ExternalURL(url=self.credentials),
-                'insert_source': self.insert_source_task
+                'credentials': ExternalURL(url=self.credentials)
             }
+            if self.insert_source_task is not None:
+                self.required_tasks['insert_source'] = self.insert_source_task
         return self.required_tasks
 
     @property
@@ -274,8 +276,8 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
             if len(elem) != num_cols:
                 raise Exception("Misaligned data in mysql_load: "
                                 "row '{row}' does not match columns '{columns}'".format(
-                                    row=elem, columns=column_names
-                                ))
+                    row=elem, columns=column_names
+                ))
 
         # The "%s" placeholder is used by the mysql-connector library
         # to execute the prepared statement, it is not used with a
@@ -458,7 +460,7 @@ class CredentialFileMysqlTarget(MySqlTarget):
                         INDEX target_table (target_table)
                     )
                 """
-                .format(marker_table=self.marker_table)
+                    .format(marker_table=self.marker_table)
             )
         except mysql.connector.Error as e:
             if e.errno == errorcode.ER_TABLE_EXISTS_ERROR:

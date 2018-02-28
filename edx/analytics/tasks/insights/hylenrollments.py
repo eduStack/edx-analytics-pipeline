@@ -112,7 +112,7 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
 
     @property
     def insert_source_task(self):  # pragma: no cover
-        return []
+        return luigi.Task()
 
     @property
     def table(self):  # pragma: no cover
@@ -172,7 +172,7 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
 
     @property
     def insert_source_task(self):  # pragma: no cover
-        return []
+        return luigi.Task()
 
     @property
     def table(self):  # pragma: no cover

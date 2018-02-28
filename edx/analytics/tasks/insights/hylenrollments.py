@@ -4,7 +4,7 @@ import datetime
 import logging
 
 import luigi.task
-
+from luigi import Task
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
 from edx.analytics.tasks.common.pathutil import (
     EventLogSelectionDownstreamMixin
@@ -112,7 +112,7 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
 
     @property
     def insert_source_task(self):  # pragma: no cover
-        return luigi.Task()
+        return None
 
     @property
     def table(self):  # pragma: no cover
@@ -172,7 +172,7 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
 
     @property
     def insert_source_task(self):  # pragma: no cover
-        return luigi.Task()
+        return None
 
     @property
     def table(self):  # pragma: no cover
@@ -221,7 +221,11 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
 
     def requires(self):
         for requirement in super(EnrollmentDailyMysqlTask, self).requires():
-            yield requirement
+            if isinstance(requirement, dict):
+                for k, v in requirement.iteritems():
+                    yield v
+            else:
+                yield requirement
 
         # the process that generates the source table used by this query
         yield (
@@ -242,7 +246,7 @@ class HylImportEnrollmentsIntoMysql(OverwriteMysqlDownstreamMixin, luigi.Wrapper
     def requires(self):
         enrollment_kwargs = {
             # 'source': self.source,
-            'interval': self.interval,
+            # 'interval': self.interval,
             # 'pattern': self.pattern,
             # 'overwrite_n_days': self.overwrite_n_days,
             'overwrite_mysql': self.overwrite_mysql,

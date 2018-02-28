@@ -7,10 +7,10 @@ from collections import OrderedDict
 
 try:
     from google.cloud.bigquery import SchemaField
+
     bigquery_available = True  # pylint: disable=invalid-name
 except ImportError:
     bigquery_available = False  # pylint: disable=invalid-name
-
 
 DEFAULT_NULL_VALUE = '\\N'  # This is the default string used by Hive to represent a NULL value.
 
@@ -219,7 +219,7 @@ class Record(object):
                 if not isinstance(field_obj, Field):
                     continue
 
-                fields.append((field_name, field_obj))
+                fields.append(('`{}`'.format(field_name), field_obj))
 
                 # Field ordering matters! Note that parent classes must be processed before any subclasses, so their
                 # fields will appear first in the list. Also note that the ordering is very difficult to predict in
@@ -621,7 +621,7 @@ class DelimitedStringField(Field):
     def validate(self, value):
         """Accepts tuple values."""
         validation_errors = super(DelimitedStringField, self).validate(value)
-        if not(value is None or isinstance(value, tuple)):
+        if not (value is None or isinstance(value, tuple)):
             validation_errors.append('The value is not a tuple')
         return validation_errors
 
@@ -649,7 +649,7 @@ class BooleanField(Field):
     def validate(self, value):
         """Accepts boolean values."""
         validation_errors = super(BooleanField, self).validate(value)
-        if not(value is None or isinstance(value, bool)):
+        if not (value is None or isinstance(value, bool)):
             validation_errors.append('The value is not a bool')
         return validation_errors
 

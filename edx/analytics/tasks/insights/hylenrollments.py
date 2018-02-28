@@ -220,12 +220,8 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
         # return """`date=`=`query_date`""".format(query_date=self.query_date)
 
     def requires(self):
-        for requirement in super(EnrollmentDailyMysqlTask, self).requires():
-            if isinstance(requirement, dict):
-                for k, v in requirement.iteritems():
-                    yield v
-            else:
-                yield requirement
+        for requirement in super(EnrollmentDailyMysqlTask, self).requires().itervalues():
+            yield requirement
 
         # the process that generates the source table used by this query
         yield (

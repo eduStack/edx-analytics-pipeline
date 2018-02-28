@@ -61,8 +61,8 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
             self.required_tasks = {
                 'credentials': ExternalURL(url=self.credentials)
             }
-        if self.insert_source_task is not None:
-            self.required_tasks['insert_source'] = self.insert_source_task
+            if self.insert_source_task is not None:
+                self.required_tasks['insert_source'] = self.insert_source_task
         return self.required_tasks
 
     @property

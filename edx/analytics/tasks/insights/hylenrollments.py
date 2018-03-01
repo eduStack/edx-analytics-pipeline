@@ -32,6 +32,10 @@ class OverwriteMysqlDownstreamMixin(object):
         description='Whether or not to overwrite the MySQL output objects; set to True by default.',
         significant=True
     )
+    allow_empty_insert = luigi.BooleanParameter(
+        default=True,
+        config_path={'section': 'enrollments', 'name': 'allow_empty_insert'},
+    )
 
 
 class CourseEnrollmentDownstreamMixin(EventLogSelectionDownstreamMixin):

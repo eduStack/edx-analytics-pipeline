@@ -407,10 +407,15 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
                 raw_events[date_string].append(event)
             else:
                 raw_events[date_string] = [event]
+        log.debug("raw_events: {}".format(raw_events))
+
+        increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name, 1)
 
         for date_string in raw_events.iterkeys():
             day_events = raw_events[date_string]
+            log.debug("day_events = raw_events[{}] : {}".format(date_string, day_events))
             user_events = {}
+            # rows = []
             for day_event_raw in day_events:
                 (course_id, user_id, timestamp, event_type, mode) = day_event_raw
                 k = (course_id, user_id)
@@ -419,15 +424,15 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
                     user_events[k].append(v)
                 else:
                     user_events[k] = [v]
-                increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name, 1)
-
-                event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, user_events,
+            for k, v in user_events:
+                course_id, user_id = k
+                log.debug("user_events = user_events[{}] : {}".format(k, v))
+                event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, v,
                                                                increment_counter)
                 for day_enrolled_record in event_stream_processor.days_enrolled():
+                    # rows.append(day_enrolled_record)
                     yield day_enrolled_record
-        # rows = []
-        # rows.append(row)
-
+        # log.debug("rows = {}".format(rows))
         # for row in rows:
         #     yield row
         # rows = [

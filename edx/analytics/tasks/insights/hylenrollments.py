@@ -76,6 +76,198 @@ class CourseEnrollmentDownstreamMixin(EventLogSelectionDownstreamMixin):
             self.interval = luigi.date_interval.Custom(self.interval_start, self.interval_end)
 
 
+class EnrollmentEvent(object):
+    """The critical information necessary to process the event in the event stream."""
+
+    def __init__(self, timestamp, event_type, mode):
+        self.timestamp = timestamp
+        self.datestamp = eventlog.timestamp_to_datestamp(timestamp)
+        self.event_type = event_type
+        self.mode = mode
+
+
+class DaysEnrolledForEvents(object):
+    """
+    Determine which days a user was enrolled in a course given a stream of enrollment events.
+
+    Produces a record for each date from the date the user enrolled in the course for the first time to the end of the
+    interval. Note that the user need not have been enrolled in the course for the entire day. These records will have
+    the following format:
+
+        datestamp (str): The date the user was enrolled in the course during.
+        course_id (str): Identifies the course the user was enrolled in.
+        user_id (int): Identifies the user that was enrolled in the course.
+        enrolled_at_end (int): 1 if the user was still enrolled in the course at the end of the day.
+        change_since_last_day (int): 1 if the user has changed to the enrolled state, -1 if the user has changed
+            to the unenrolled state and 0 if the user's enrollment state hasn't changed.
+
+    If the first event in the stream for a user in a course is an unenrollment event, that would indicate that the user
+    was enrolled in the course before that moment in time. It is unknown, however, when the user enrolled in the course,
+    so we conservatively omit records for the time before that unenrollment event even though it is likely they were
+    enrolled in the course for some unknown amount of time before then. Enrollment counts for dates before the
+    unenrollment event will be less than the actual value.
+
+    If the last event for a user is an enrollment event, that would indicate that the user was still enrolled in the
+    course at the end of the interval, so records are produced from that last enrollment event all the way to the end of
+    the interval. If we miss an unenrollment event after this point, it will result in enrollment counts that are
+    actually higher than the actual value.
+
+    Both of the above paragraphs describe edge cases that account for the majority of the error that can be observed in
+    the results of this analysis.
+
+    Ranges of dates where the user is continuously enrolled will be represented as contiguous records with the first
+    record indicating the change (new enrollment), and the last record indicating the unenrollment. It will look
+    something like this::
+
+        datestamp,enrolled_at_end,change_since_last_day
+        2014-01-01,1,1
+        2014-01-02,1,0
+        2014-01-03,1,0
+        2014-01-04,0,-1
+        2014-01-05,0,0
+
+    The above activity indicates that the user enrolled in the course on 2014-01-01 and unenrolled from the course on
+    2014-01-04. Records are created for every date after the date when they first enrolled.
+
+    If a user enrolls and unenrolls from a course on the same day, a record will appear that looks like this::
+
+        datestamp,enrolled_at_end,change_since_last_day
+        2014-01-01,0,0
+
+    Args:
+        course_id (str): Identifies the course the user was enrolled in.
+        user_id (int): Identifies the user that was enrolled in the course.
+        interval (luigi.date_interval.DateInterval): The interval of time in which these enrollment events took place.
+        events (iterable): The enrollment events as produced by the map tasks. This is expected to be an iterable
+            structure whose elements are tuples consisting of a timestamp and an event type.
+
+    """
+
+    MODE_UNKNOWN = 'unknown'
+
+    def __init__(self, course_id, user_id, interval, events, increment_counter=None):
+        self.course_id = course_id
+        self.user_id = user_id
+        self.interval = interval
+        self.increment_counter = increment_counter
+
+        self.sorted_events = sorted(events)
+        # After sorting, we can discard time information since we only care about date transitions.
+        self.sorted_events = [
+            EnrollmentEvent(timestamp, event_type, mode) for timestamp, event_type, mode in self.sorted_events
+        ]
+        # Since each event looks ahead to see the time of the next event, insert a dummy event at then end that
+        # indicates the end of the requested interval. If the user's last event is an enrollment activation event then
+        # they are assumed to be enrolled up until the end of the requested interval. Note that the mapper ensures that
+        # no events on or after date_b are included in the analyzed data set.
+        self.sorted_events.append(
+            EnrollmentEvent(self.interval.date_b.isoformat(), None, None))  # pylint: disable=no-member
+
+        self.first_event = self.sorted_events[0]
+
+        # track the previous state in order to easily detect state changes between days.
+        if self.first_event.event_type == DEACTIVATED:
+            # First event was an unenrollment event, assume the user was enrolled before that moment in time.
+            self.increment_counter("Quality First Event Is Unenrollment")
+            log.warning('First event is an unenrollment for user %d in course %s on %s',
+                        self.user_id, self.course_id, self.first_event.datestamp)
+        elif self.first_event.event_type == MODE_CHANGED:
+            self.increment_counter("Quality First Event Is Mode Change")
+            log.warning('First event is a mode change for user %d in course %s on %s',
+                        self.user_id, self.course_id, self.first_event.datestamp)
+
+        # Before we start processing events, we can assume that their current state is the same as it has been for all
+        # time before the first event.
+        self.state = self.previous_state = UNENROLLED
+        self.mode = self.MODE_UNKNOWN
+
+    def days_enrolled(self):
+        """
+        A record is yielded for each day during which the user was enrolled in the course.
+
+        Yields:
+            tuple: An enrollment record for each day during which the user was enrolled in the course.
+
+        """
+        # The last element of the list is a placeholder indicating the end of the interval. Don't process it.
+        for index in range(len(self.sorted_events) - 1):
+            self.event = self.sorted_events[index]
+            self.next_event = self.sorted_events[index + 1]
+
+            self.change_state()
+
+            if self.event.datestamp != self.next_event.datestamp:
+                change_since_last_day = self.state - self.previous_state
+
+                # There may be a very wide gap between this event and the next event. If the user is currently
+                # enrolled, we can assume they continue to be enrolled at least until the next day we see an event.
+                # Emit records for each of those intermediary days. Since the end of the interval is represented by
+                # a dummy event at the end of the list of events, it will be represented by self.next_event when
+                # processing the last real event in the stream. This allows the records to be produced up to the end
+                # of the interval if the last known state was "ENROLLED".
+                for datestamp in self.all_dates_between(self.event.datestamp, self.next_event.datestamp):
+                    yield self.enrollment_record(
+                        datestamp,
+                        self.state,
+                        change_since_last_day if datestamp == self.event.datestamp else 0,
+                        self.mode
+                    )
+
+                self.previous_state = self.state
+
+    def all_dates_between(self, start_date_str, end_date_str):
+        """
+        All dates from the start date up to the end date.
+
+        Yields:
+            str: ISO 8601 datestamp for each date from the first date (inclusive) up to the end date (exclusive).
+
+        """
+        current_date = self.parse_date_string(start_date_str)
+        end_date = self.parse_date_string(end_date_str)
+
+        while current_date < end_date:
+            yield current_date.isoformat()
+            current_date += datetime.timedelta(days=1)
+
+    def parse_date_string(self, date_str):
+        """Efficiently parse an ISO 8601 date stamp into a datetime.date() object."""
+        date_parts = [int(p) for p in date_str.split('-')[:3]]
+        return datetime.date(*date_parts)
+
+    def enrollment_record(self, datestamp, enrolled_at_end, change_since_last_day, mode_at_end):
+        """A complete enrollment record."""
+        return (datestamp, self.course_id, self.user_id, enrolled_at_end, change_since_last_day, mode_at_end)
+
+    def change_state(self):
+        """Change state when appropriate.
+
+        Note that in spite of our best efforts some events might be lost, causing invalid state transitions.
+        """
+        if self.state == ENROLLED and self.event.event_type == DEACTIVATED:
+            self.state = UNENROLLED
+            self.increment_counter("Subset Unenrollment")
+        elif self.state == UNENROLLED and self.event.event_type == ACTIVATED:
+            self.state = ENROLLED
+            self.increment_counter("Subset Enrollment")
+        elif self.event.event_type == MODE_CHANGED:
+            if self.mode == self.event.mode:
+                self.increment_counter("Subset Unchanged")
+                self.increment_counter("Subset Unchanged Mode")
+            else:
+                self.increment_counter("Subset Mode Change")
+        else:
+            log.warning(
+                'No state change for %s event. User %d is already in the requested state for course %s on %s.',
+                self.event.event_type, self.user_id, self.course_id, self.event.datestamp
+            )
+            self.increment_counter("Subset Unchanged")
+            self.increment_counter(
+                "Subset Unchanged Already {}".format("Enrolled" if self.state == ENROLLED else "Unenrolled"))
+
+        self.mode = self.event.mode
+
+
 class CourseEnrollmentRecord(Record):
     """A user's enrollment history."""
     date = DateField(nullable=False, description='Enrollment date.')
@@ -168,7 +360,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
             return
 
-        # self.incr_counter(self.counter_category_name, 'Output From Mapper', 1)
+        self.incr_counter(self.counter_category_name, 'Output From Mapper', 1)
         return date_string, (course_id.encode('utf8'), user_id, timestamp, event_type, mode)
 
     def output(self):
@@ -204,11 +396,40 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             '{"username": "ericqian", "event_source": "server", "name": "edx.course.enrollment.activated", "accept_language": "zh-CN,zh;q=0.8,en;q=0.6", "time": "2018-03-05T03:15:40.849946+00:00", "agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.82 Safari/537.36", "page": null, "host": "x.shumba.cn", "session": "5aecb29254ac7c451be5c98aa8c8e59d", "referer": "https://x.shumba.cn/courses/course-v1:SHUMBAX+SHU806+2016_T2/instructor", "context": {"course_user_tags": {}, "user_id": 10, "org_id": "SHUMBAX", "course_id": "course-v1:SHUMBAX+SHU806+2016_T2", "path": "/courses/course-v1:SHUMBAX+SHU806+2016_T2/instructor/api/students_update_enrollment"}, "ip": "1.198.34.18", "event": {"course_id": "course-v1:SHUMBAX+SHU806+2016_T2", "user_id": 114, "mode": "audit"}, "event_type": "edx.course.enrollment.activated"}',
             '{"username": "ericqian", "event_source": "server", "name": "edx.course.enrollment.activated", "accept_language": "zh-CN,zh;q=0.8,en;q=0.6", "time": "2018-03-05T03:15:54.368907+00:00", "agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.82 Safari/537.36", "page": null, "host": "x.shumba.cn", "session": "5aecb29254ac7c451be5c98aa8c8e59d", "referer": "https://exmail.qq.com/cgi-bin/mail_spam?action=check_link&url=https%3A//x.shumba.cn/activate/7d8446d49b074da7a3139e75ecbf5f55&mailid=ZC0905-H3HtIa3g4yQ5TGQ8u_ifW6n&spam=0&r=0.7339119604091979", "context": {"user_id": 10, "org_id": "SHUMBAX", "course_id": "course-v1:SHUMBAX+QTM101+2016_08", "path": "/activate/7d8446d49b074da7a3139e75ecbf5f55"}, "ip": "1.198.34.18", "event": {"course_id": "course-v1:SHUMBAX+QTM101+2016_08", "user_id": 114, "mode": "audit"}, "event_type": "edx.course.enrollment.activated"'
         ]
+        raw_events = {}
         for line in lines:
-            row = self.get_event_row_from_line(line)
-            log.info("row = {}".format(row))
-            if row:
-                yield row
+            event_row = self.get_event_row_from_line(line)
+            if not event_row:
+                continue
+            date_string, event = event_row
+            log.info("row: date_string = {} event = {}".format(date_string, event))
+            if date_string in raw_events:
+                raw_events[date_string].append(event)
+            else:
+                raw_events[date_string] = [event]
+
+        for date_string in raw_events.iterkeys():
+            day_events = raw_events[date_string]
+            user_events = {}
+            for day_event_raw in day_events:
+                (course_id, user_id, timestamp, event_type, mode) = day_event_raw
+                k = (course_id, user_id)
+                v = (timestamp, event_type, mode)
+                if k in user_events:
+                    user_events[k].append(v)
+                else:
+                    user_events[k] = [v]
+                increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name, 1)
+
+                event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, user_events,
+                                                               increment_counter)
+                for day_enrolled_record in event_stream_processor.days_enrolled():
+                    yield day_enrolled_record
+        # rows = []
+        # rows.append(row)
+
+        # for row in rows:
+        #     yield row
         # rows = [
         #     ('2018-02-04', 'courseid1', '789789', True, True, '1'),
         #     ('2018-02-02', 'courseid1', '123123', True, True, '1'),
@@ -223,8 +444,6 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         #     ('2018-02-04', 'courseid1', '789789', True, True, '1'),
         #     ('2018-02-04', 'courseid1', '789789', True, True, '1')
         # ]
-        # for row in rows:
-        #     yield row
 
     def _incr_counter(self, *args):
         """ Increments a Hadoop counter

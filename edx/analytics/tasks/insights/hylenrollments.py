@@ -95,13 +95,14 @@ class EnrollmentDailyRecord(Record):
                                                 'this date.')
 
 
-class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
+# class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
+class CourseEnrollmentEventsTask(luigi.Task):
     """
     Task to extract enrollment events from eventlogs over a given interval.
     This would produce a different output file for each day within the interval
     containing that day's enrollment events only.
     """
-    complete = False
+    completed = False
     # FILEPATH_PATTERN should match the output files defined by output_path_for_key().
     FILEPATH_PATTERN = '.*?course_enrollment_events_(?P<date>\\d{4}-\\d{2}-\\d{2})'
 
@@ -128,13 +129,17 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             yield row
 
     def complete(self):
-        return self.complete
+        return self.completed
         # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
 
     def run(self):
         log.info('test-run')
-        if not self.complete:
-            self.complete = True
+        if not self.completed:
+            self.completed = True
+
+    # def requires(self):
+    #     for requirement in super(CourseEnrollmentEventsTask, self).requires():
+    #         yield requirement
 
 
 class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, IncrementalMysqlInsertTask):

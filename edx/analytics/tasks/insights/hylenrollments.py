@@ -6,11 +6,13 @@ import logging
 import luigi.task
 from luigi import Task
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
-from edx.analytics.tasks.common.pathutil import (
-    EventLogSelectionDownstreamMixin
-)
+
 from edx.analytics.tasks.util.decorators import workflow_entry_point
 from edx.analytics.tasks.util.record import BooleanField, DateField, DateTimeField, IntegerField, Record, StringField
+from edx.analytics.tasks.util.url import ExternalURL, UncheckedExternalURL, get_target_from_url, url_path_join
+from edx.analytics.tasks.common.pathutil import (
+    EventLogSelectionDownstreamMixin, EventLogSelectionMixin, PathSelectionByDateIntervalTask
+)
 
 log = logging.getLogger(__name__)
 DEACTIVATED = 'edx.course.enrollment.deactivated'
@@ -93,6 +95,39 @@ class EnrollmentDailyRecord(Record):
                                                 'this date.')
 
 
+class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
+    """
+    Task to extract enrollment events from eventlogs over a given interval.
+    This would produce a different output file for each day within the interval
+    containing that day's enrollment events only.
+    """
+
+    # FILEPATH_PATTERN should match the output files defined by output_path_for_key().
+    FILEPATH_PATTERN = '.*?course_enrollment_events_(?P<date>\\d{4}-\\d{2}-\\d{2})'
+
+    # We use warehouse_path to generate the output path, so we make this a non-param.
+    output_root = None
+
+    counter_category_name = 'Enrollment Events'
+
+    def output(self):
+        rows = [
+            ('2018-02-02', 'courseid1', '123123', True, True, '1'),
+            ('2018-02-02', 'courseid1', '123123', True, True, '1'),
+            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1')
+        ]
+        for row in rows:
+            yield row
+
+
 class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, IncrementalMysqlInsertTask):
     """Produce a data set that shows which days each user was enrolled in each course."""
 
@@ -111,20 +146,7 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         return 'course_enrollment'
 
     def rows(self):
-        rows = [
-            ('2018-02-02', 'courseid1', '123123', True, True, '1'),
-            ('2018-02-02', 'courseid1', '123123', True, True, '1'),
-            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1')
-        ]
-        for row in rows:
+        for row in self.requires_local().output():
             yield row
 
     @property
@@ -148,6 +170,20 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         else:
             return None
         # return """`date=`=`query_date`""".format(query_date=self.query_date)
+
+    def requires_local(self):
+        return CourseEnrollmentEventsTask(
+            interval=self.overwrite_mysql,
+            source=self.source,
+            pattern=self.pattern,
+            overwrite=True,
+        )
+
+    def requires(self):
+        for requirement in super(CourseEnrollmentTask, self).requires().itervalues():
+            yield requirement
+
+        yield self.requires_local()
 
 
 class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,

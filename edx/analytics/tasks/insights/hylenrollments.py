@@ -113,17 +113,17 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
     def output(self):
         rows = [
-            ('2018-02-02', 'courseid1', '123123', True, True, '1'),
-            ('2018-02-02', 'courseid1', '123123', True, True, '1'),
-            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-02-04', 'courseid1', '789789', True, True, '1')
+            ('2018-01-02', 'courseid1', '123123', True, True, '1'),
+            ('2018-01-02', 'courseid1', '123123', True, True, '1'),
+            ('2018-01-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-01-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-01-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-01-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-01-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-01-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-01-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-01-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-01-04', 'courseid1', '789789', True, True, '1')
         ]
         for row in rows:
             yield row
@@ -139,9 +139,12 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             self.completed = True
 
     def requires(self):
-        for requirement in super(CourseEnrollmentEventsTask, self).requires():
-            yield requirement
-
+        requires = super(CourseEnrollmentEventsTask, self).requires()
+        if isinstance(requires, luigi.Task):
+            yield requires
+        else:
+            for requirement in requires:
+                yield requirement
 
 class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, IncrementalMysqlInsertTask):
     """Produce a data set that shows which days each user was enrolled in each course."""

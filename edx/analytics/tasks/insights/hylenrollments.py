@@ -123,7 +123,18 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             ('2018-01-04', 'courseid1', '789789', True, True, '1'),
             ('2018-01-04', 'courseid1', '789789', True, True, '1'),
             ('2018-01-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-01-04', 'courseid1', '789789', True, True, '1')
+            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-02-02', 'courseid1', '123123', True, True, '1'),
+            ('2018-02-02', 'courseid1', '123123', True, True, '1'),
+            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-02-03', 'courseid1', '567567', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1'),
+            ('2018-02-04', 'courseid1', '789789', True, True, '1')
         ]
         for row in rows:
             yield row
@@ -145,6 +156,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         else:
             for requirement in requires:
                 yield requirement
+
 
 class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, IncrementalMysqlInsertTask):
     """Produce a data set that shows which days each user was enrolled in each course."""
@@ -186,7 +198,7 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
     @property
     def record_filter(self):
         if self.overwrite:
-            return """`date` >= '{}' AND `date` <= '{}'""".format(self.interval.date_a.isoformat(),
+            return """`date` >= '{}' AND `date` <= '{}'""".format(self.overwrite_from_date.date_a.isoformat(),
                                                                   self.interval.date_b.isoformat())
         else:
             return None
@@ -230,6 +242,7 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
     def __init__(self, *args, **kwargs):
         super(EnrollmentDailyMysqlTask, self).__init__(*args, **kwargs)
         self.overwrite = self.overwrite_mysql
+        self.overwrite_from_date = self.interval.date_b - datetime.timedelta(days=self.overwrite_n_days)
 
     @property
     def insert_source_task(self):  # pragma: no cover
@@ -242,6 +255,11 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
     @property
     def insert_query(self):
         """The query builder that controls the structure and fields inserted into the new table."""
+        if self.overwrite:
+            from_date = self.overwrite_from_date
+        else:
+            from_date = self.interval.date_a
+
         query = """
             SELECT
                 ce.course_id,
@@ -253,7 +271,7 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
             GROUP BY
                 ce.course_id,
                 ce.`date`
-        """.format(self.interval.date_a.isoformat(), self.interval.date_b.isoformat())
+        """.format(from_date.isoformat(), self.interval.date_b.isoformat())
         return query
 
     def rows(self):
@@ -279,7 +297,7 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
     @property
     def record_filter(self):
         if self.overwrite:
-            return """`date` >= '{}' AND `date` <= '{}'""".format(self.interval.date_a.isoformat(),
+            return """`date` >= '{}' AND `date` <= '{}'""".format(self.overwrite_from_date.isoformat(),
                                                                   self.interval.date_b.isoformat())
         else:
             return None

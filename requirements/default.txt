@@ -43,6 +43,7 @@ jinja2==2.8.1
 jmespath==0.9.3           # via boto3, botocore
 markupsafe==1.0           # via jinja2
 numpy==1.11.3
+pandas==0.13.0
 paramiko==2.4.0           # via ansible
 paypalrestsdk==1.9.0
 pbr==3.1.1                # via stevedore

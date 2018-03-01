@@ -4,6 +4,7 @@ import sys
 import datetime
 import logging
 import luigi.task
+import pandas as pd
 from luigi import Task
 from luigi.parameter import DateIntervalParameter
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
@@ -396,60 +397,32 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             '{"username": "ericqian", "event_source": "server", "name": "edx.course.enrollment.activated", "accept_language": "zh-CN,zh;q=0.8,en;q=0.6", "time": "2018-03-05T03:15:40.849946+00:00", "agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.82 Safari/537.36", "page": null, "host": "x.shumba.cn", "session": "5aecb29254ac7c451be5c98aa8c8e59d", "referer": "https://x.shumba.cn/courses/course-v1:SHUMBAX+SHU806+2016_T2/instructor", "context": {"course_user_tags": {}, "user_id": 10, "org_id": "SHUMBAX", "course_id": "course-v1:SHUMBAX+SHU806+2016_T2", "path": "/courses/course-v1:SHUMBAX+SHU806+2016_T2/instructor/api/students_update_enrollment"}, "ip": "1.198.34.18", "event": {"course_id": "course-v1:SHUMBAX+SHU806+2016_T2", "user_id": 114, "mode": "audit"}, "event_type": "edx.course.enrollment.activated"}',
             '{"username": "ericqian", "event_source": "server", "name": "edx.course.enrollment.activated", "accept_language": "zh-CN,zh;q=0.8,en;q=0.6", "time": "2018-03-05T03:15:54.368907+00:00", "agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.82 Safari/537.36", "page": null, "host": "x.shumba.cn", "session": "5aecb29254ac7c451be5c98aa8c8e59d", "referer": "https://exmail.qq.com/cgi-bin/mail_spam?action=check_link&url=https%3A//x.shumba.cn/activate/7d8446d49b074da7a3139e75ecbf5f55&mailid=ZC0905-H3HtIa3g4yQ5TGQ8u_ifW6n&spam=0&r=0.7339119604091979", "context": {"user_id": 10, "org_id": "SHUMBAX", "course_id": "course-v1:SHUMBAX+QTM101+2016_08", "path": "/activate/7d8446d49b074da7a3139e75ecbf5f55"}, "ip": "1.198.34.18", "event": {"course_id": "course-v1:SHUMBAX+QTM101+2016_08", "user_id": 114, "mode": "audit"}, "event_type": "edx.course.enrollment.activated"'
         ]
-        raw_events = {}
+
+        raw_events = []
+
         for line in lines:
             event_row = self.get_event_row_from_line(line)
             if not event_row:
                 continue
-            date_string, event = event_row
-            log.info("row: date_string = {} event = {}".format(date_string, event))
-            if date_string in raw_events:
-                raw_events[date_string].append(event)
-            else:
-                raw_events[date_string] = [event]
+            date_string, (course_id, user_id, timestamp, event_type, mode) = event_row
+            event_row = (date_string, (course_id, user_id), timestamp, event_type, mode)
+            log.info("event_row={}".format(event_row))
+            raw_events.append(event_row)
+
         log.debug("raw_events: {}".format(raw_events))
 
-        increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name, 1)
+        columns = ['date_string', 'course_id+user_id', 'timestamp', 'event_type', 'mode']
 
-        for date_string in raw_events.iterkeys():
-            day_events = raw_events[date_string]
-            log.debug("day_events: raw_events[{}] = {}".format(date_string, day_events))
-            user_events = {}
-            # rows = []
-            for day_event_raw in day_events:
-                (course_id, user_id, timestamp, event_type, mode) = day_event_raw
-                k = (course_id, user_id)
-                v = (timestamp, event_type, mode)
-                if k in user_events:
-                    user_events[k].append(v)
-                else:
-                    user_events[k] = [v]
-            for k in user_events.iterkeys():
-                v = user_events[k]
-                log.debug("user_events: user_events[{}] = {}".format(k, v))
-                course_id, user_id = k
-                event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, v,
-                                                               increment_counter)
-                for day_enrolled_record in event_stream_processor.days_enrolled():
-                    # rows.append(day_enrolled_record)
-                    yield day_enrolled_record
-        # log.debug("rows = {}".format(rows))
-        # for row in rows:
-        #     yield row
-        # rows = [
-        #     ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-        #     ('2018-02-02', 'courseid1', '123123', True, True, '1'),
-        #     ('2018-02-02', 'courseid1', '123123', True, True, '1'),
-        #     ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-        #     ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-        #     ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-        #     ('2018-02-03', 'courseid1', '567567', True, True, '1'),
-        #     ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-        #     ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-        #     ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-        #     ('2018-02-04', 'courseid1', '789789', True, True, '1'),
-        #     ('2018-02-04', 'courseid1', '789789', True, True, '1')
-        # ]
+        df = pd.DataFrame(data=raw_events, columns=columns)
+
+        for (date_string, (course_id, user_id)), group in df.groupby(['date_string', 'course_id+user_id']):
+            values = group.get_values()
+            increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name, 1)
+
+            event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, values,
+                                                           increment_counter)
+            for day_enrolled_record in event_stream_processor.days_enrolled():
+                yield day_enrolled_record
 
     def _incr_counter(self, *args):
         """ Increments a Hadoop counter

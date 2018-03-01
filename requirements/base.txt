@@ -19,6 +19,7 @@ idna==2.6                 # via cryptography
 ipaddress==1.0.18         # via cryptography
 jinja2==2.8.1
 markupsafe==1.0           # via jinja2
+pandas==0.13.0
 paramiko==2.4.0           # via ansible
 pyasn1==0.4.2             # via paramiko
 pycparser==2.18           # via cffi

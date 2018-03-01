@@ -226,6 +226,10 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         return self.completed
         # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
 
+    def init_local(self):
+        self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
+        self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
+
     def run(self):
         log.info('test-run')
         self.init_local()

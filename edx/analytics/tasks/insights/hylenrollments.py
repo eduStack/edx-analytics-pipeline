@@ -188,7 +188,7 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
     @property
     def record_filter(self):
         if self.overwrite:
-            return """`date` >= '{}' AND `date` <= '{}'""".format(self.overwrite_from_date.date_a.isoformat(),
+            return """`date` >= '{}' AND `date` <= '{}'""".format(self.overwrite_from_date.isoformat(),
                                                                   self.interval.date_b.isoformat())
         else:
             return None

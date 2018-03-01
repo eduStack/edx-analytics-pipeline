@@ -1,5 +1,5 @@
 """Compute metrics related to user enrollments in courses"""
-
+import gzip
 import sys
 import datetime
 import logging
@@ -382,7 +382,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
     def output(self):
         for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as input_file:
+            with gzip.open(log_file, 'rb') as input_file:
                 log.info('reading log file={}'.format(input_file))
                 raw_events = self.get_raw_events_from_log_file(input_file)
                 if not raw_events:

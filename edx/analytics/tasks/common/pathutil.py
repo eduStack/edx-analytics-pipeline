@@ -163,6 +163,7 @@ class PathSelectionByDateIntervalTask(EventLogSelectionDownstreamMixin, luigi.Wr
             self.requirements = self._get_requirements()
         else:
             log.debug('Using cached requirements.')
+        log.debug('requirements = {}'.format(self.requirements))
         return self.requirements
 
     def _get_requirements(self):

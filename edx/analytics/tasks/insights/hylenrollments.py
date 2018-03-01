@@ -111,6 +111,9 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
     counter_category_name = 'Enrollment Events'
 
+    def __init__(self, *args, **kwargs):
+        super(CourseEnrollmentEventsTask, self).__init__(*args, **kwargs)
+
     def get_event_row_from_line(self, line):
         value = self.get_event_and_date_string(line)
         if value is None:
@@ -199,7 +202,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             """{"username": "ericqian", "event_source": "server", "name": "edx.course.enrollment.activated", "accept_language": "zh-CN,zh;q=0.8,en;q=0.6", "time": "2016-11-05T03:15:54.368907+00:00", "agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.82 Safari/537.36", "page": null, "host": "x.shumba.cn", "session": "5aecb29254ac7c451be5c98aa8c8e59d", "referer": "https://exmail.qq.com/cgi-bin/mail_spam?action=check_link&url=https%3A//x.shumba.cn/activate/7d8446d49b074da7a3139e75ecbf5f55&mailid=ZC0905-H3HtIa3g4yQ5TGQ8u_ifW6n&spam=0&r=0.7339119604091979", "context": {"user_id": 10, "org_id": "SHUMBAX", "course_id": "course-v1:SHUMBAX+QTM101+2016_08", "path": "/activate/7d8446d49b074da7a3139e75ecbf5f55"}, "ip": "1.198.34.18", "event": {"course_id": "course-v1:SHUMBAX+QTM101+2016_08", "user_id": 114, "mode": "audit"}, "event_type": "edx.course.enrollment.activated"}"""
         ]
         for line in lines:
-            row = self.get_event_row_from_line(lines)
+            row = self.get_event_row_from_line(line)
             log.info("row = {}".format(row))
             yield row
         # rows = [
@@ -225,6 +228,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
     def run(self):
         log.info('test-run')
+        self.init_local()
         super(CourseEnrollmentEventsTask, self).run()
         if not self.completed:
             self.completed = True

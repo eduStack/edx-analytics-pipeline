@@ -378,9 +378,9 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
     def output(self):
         raw_events = []
-        for log_file in self.input():
+        for log_file in luigi.task.flatten(self.input()):
             with log_file.open('r') as input_file:
-                log.info('input log file={}'.format(file))
+                log.info('reading log file={}'.format(file))
                 raw_events = self.get_raw_events_from_log_file(input_file)
 
         columns = ['date_string', 'course_id+user_id', 'timestamp', 'event_type', 'mode']
@@ -405,10 +405,10 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         if len(args) == 2:
             # backwards compatibility with existing hadoop jobs
             group_name, count = args
-            print >> sys.stderr, 'reporter:counter:%s,%s' % (group_name, count)
+            # log.debug('reporter:counter:%s,%s' % (group_name, count))
         else:
             group, name, count = args
-            print >> sys.stderr, 'reporter:counter:%s,%s,%s' % (group, name, count)
+            # log.debug('reporter:counter:%s,%s,%s' % (group, name, count))
 
     def incr_counter(self, *args, **kwargs):
         """ Increments a Hadoop counter

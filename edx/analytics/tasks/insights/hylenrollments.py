@@ -1,8 +1,8 @@
 """Compute metrics related to user enrollments in courses"""
 
+import sys
 import datetime
 import logging
-
 import luigi.task
 from luigi import Task
 from luigi.parameter import DateIntervalParameter
@@ -103,6 +103,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
     containing that day's enrollment events only.
     """
     completed = False
+    batch_counter_default = 1
     # FILEPATH_PATTERN should match the output files defined by output_path_for_key().
     FILEPATH_PATTERN = '.*?course_enrollment_events_(?P<date>\\d{4}-\\d{2}-\\d{2})'
 
@@ -110,6 +111,8 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
     output_root = None
 
     counter_category_name = 'Enrollment Events'
+
+    _counter_dict = {}
 
     def __init__(self, *args, **kwargs):
         super(CourseEnrollmentEventsTask, self).__init__(*args, **kwargs)
@@ -147,22 +150,22 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         course_id = opaque_key_util.normalize_course_id(event_data.get('course_id'))
         if course_id is None or not opaque_key_util.is_valid_course_id(course_id):
             log.error("encountered explicit enrollment event with invalid course_id: %s", event)
-            # self.incr_counter(self.counter_category_name, 'Discard Enroll Missing course_id', 1)
-            # self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing course_id', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
             return
 
         user_id = event_data.get('user_id')
         if user_id is None:
             log.error("encountered explicit enrollment event with no user_id: %s", event)
-            # self.incr_counter(self.counter_category_name, 'Discard Enroll Missing user_id', 1)
-            # self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing user_id', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
             return
 
         mode = event_data.get('mode')
         if mode is None:
             log.error("encountered explicit enrollment event with no mode: %s", event)
-            # self.incr_counter(self.counter_category_name, 'Discard Enroll Missing mode', 1)
-            # self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing mode', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
             return
 
         # self.incr_counter(self.counter_category_name, 'Output From Mapper', 1)
@@ -222,6 +225,41 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         # ]
         # for row in rows:
         #     yield row
+
+    def _incr_counter(self, *args):
+        """ Increments a Hadoop counter
+
+        Note that this seems to be a bit slow, ~1 ms. Don't overuse this function by updating very frequently.
+        """
+        if len(args) == 2:
+            # backwards compatibility with existing hadoop jobs
+            group_name, count = args
+            print >> sys.stderr, 'reporter:counter:%s,%s' % (group_name, count)
+        else:
+            group, name, count = args
+            print >> sys.stderr, 'reporter:counter:%s,%s,%s' % (group, name, count)
+
+    def incr_counter(self, *args, **kwargs):
+        """ Increments a Hadoop counter
+
+        Since counters can be a bit slow to update, this batches the updates.
+        """
+        threshold = kwargs.get("threshold", self.batch_counter_default)
+        if len(args) == 2:
+            # backwards compatibility with existing hadoop jobs
+            group_name, count = args
+            key = (group_name,)
+        else:
+            group, name, count = args
+            key = (group, name)
+
+        ct = self._counter_dict.get(key, 0)
+        ct += count
+        if ct >= threshold:
+            new_arg = list(key) + [ct]
+            self._incr_counter(*new_arg)
+            ct = 0
+        self._counter_dict[key] = ct
 
     def complete(self):
         return self.completed

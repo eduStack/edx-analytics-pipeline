@@ -413,7 +413,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
         for date_string in raw_events.iterkeys():
             day_events = raw_events[date_string]
-            log.debug("day_events = raw_events[{}] : {}".format(date_string, day_events))
+            log.debug("day_events: raw_events[{}] = {}".format(date_string, day_events))
             user_events = {}
             # rows = []
             for day_event_raw in day_events:
@@ -424,9 +424,10 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
                     user_events[k].append(v)
                 else:
                     user_events[k] = [v]
-            for k, v in user_events:
+            for k in user_events.iterkeys():
+                v = user_events[k]
+                log.debug("user_events: user_events[{}] = {}".format(k, v))
                 course_id, user_id = k
-                log.debug("user_events = user_events[{}] : {}".format(k, v))
                 event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, v,
                                                                increment_counter)
                 for day_enrolled_record in event_stream_processor.days_enrolled():

@@ -113,16 +113,6 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
     def output(self):
         rows = [
-            ('2018-01-02', 'courseid1', '123123', True, True, '1'),
-            ('2018-01-02', 'courseid1', '123123', True, True, '1'),
-            ('2018-01-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-01-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-01-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-01-03', 'courseid1', '567567', True, True, '1'),
-            ('2018-01-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-01-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-01-04', 'courseid1', '789789', True, True, '1'),
-            ('2018-01-04', 'courseid1', '789789', True, True, '1'),
             ('2018-02-04', 'courseid1', '789789', True, True, '1'),
             ('2018-02-02', 'courseid1', '123123', True, True, '1'),
             ('2018-02-02', 'courseid1', '123123', True, True, '1'),

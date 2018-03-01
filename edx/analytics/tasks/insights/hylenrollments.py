@@ -101,7 +101,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
     This would produce a different output file for each day within the interval
     containing that day's enrollment events only.
     """
-
+    complete = False
     # FILEPATH_PATTERN should match the output files defined by output_path_for_key().
     FILEPATH_PATTERN = '.*?course_enrollment_events_(?P<date>\\d{4}-\\d{2}-\\d{2})'
 
@@ -126,6 +126,15 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         ]
         for row in rows:
             yield row
+
+    def complete(self):
+        return self.complete
+        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+
+    def run(self):
+        log.info('test-run')
+        if not self.complete:
+            self.complete = True
 
 
 class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, IncrementalMysqlInsertTask):
@@ -175,8 +184,7 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         return CourseEnrollmentEventsTask(
             interval=self.overwrite_mysql,
             source=self.source,
-            pattern=self.pattern,
-            overwrite=True,
+            pattern=self.pattern
         )
 
     def requires(self):

@@ -5,6 +5,7 @@ import logging
 
 import luigi.task
 from luigi import Task
+from luigi.parameter import DateIntervalParameter
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
 
 from edx.analytics.tasks.util.decorators import workflow_entry_point
@@ -95,8 +96,7 @@ class EnrollmentDailyRecord(Record):
                                                 'this date.')
 
 
-# class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
-class CourseEnrollmentEventsTask(luigi.Task):
+class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
     """
     Task to extract enrollment events from eventlogs over a given interval.
     This would produce a different output file for each day within the interval
@@ -134,12 +134,13 @@ class CourseEnrollmentEventsTask(luigi.Task):
 
     def run(self):
         log.info('test-run')
+
         if not self.completed:
             self.completed = True
 
-    # def requires(self):
-    #     for requirement in super(CourseEnrollmentEventsTask, self).requires():
-    #         yield requirement
+    def requires(self):
+        for requirement in super(CourseEnrollmentEventsTask, self).requires():
+            yield requirement
 
 
 class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, IncrementalMysqlInsertTask):
@@ -150,6 +151,7 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
     def __init__(self, *args, **kwargs):
         super(CourseEnrollmentTask, self).__init__(*args, **kwargs)
         self.overwrite = self.overwrite_mysql
+        self.overwrite_from_date = self.interval.date_b - datetime.timedelta(days=self.overwrite_n_days)
 
     @property
     def insert_source_task(self):  # pragma: no cover
@@ -160,8 +162,10 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         return 'course_enrollment'
 
     def rows(self):
-        for row in self.requires_local().output():
-            yield row
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
 
     @property
     def columns(self):
@@ -186,17 +190,28 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         # return """`date=`=`query_date`""".format(query_date=self.query_date)
 
     def requires_local(self):
+        if self.overwrite_n_days == 0:
+            return []
+
+        overwrite_interval = DateIntervalParameter().parse('{}-{}'.format(
+            self.overwrite_from_date,
+            self.interval.date_b
+        ))
+
         return CourseEnrollmentEventsTask(
-            interval=self.overwrite_mysql,
+            interval=overwrite_interval,
             source=self.source,
-            pattern=self.pattern
+            pattern=self.pattern,
+            overwrite=True,
         )
 
     def requires(self):
         for requirement in super(CourseEnrollmentTask, self).requires().itervalues():
             yield requirement
 
-        yield self.requires_local()
+        requires_local = self.requires_local()
+        if isinstance(requires_local, luigi.Task):
+            yield requires_local
 
 
 class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,

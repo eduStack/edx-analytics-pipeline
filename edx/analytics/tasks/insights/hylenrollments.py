@@ -399,25 +399,31 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         ]
 
         raw_events = []
-
+        """
+            ('2018-02-24', ('course-v1:SHUMBAX+QTM101+2016_08', 111), '2018-02-24T15:38:28.177968', 'edx.course.enrollment.activated', 'audit'),
+            ('2018-02-24', ('course-v1:SHUMBAX+QTM101+2016_08', 36), '2018-02-24T15:38:43.887522', 'edx.course.enrollment.activated', 'audit'),
+            ('2018-02-24', ('course-v1:SHUMBAX+ADM101+2016_8', 111), '2018-02-24T15:47:11.010232', 'edx.course.enrollment.activated', 'audit'),
+            ('2018-02-25', ('course-v1:SHUMBAX+ADM101+2016_8', 111), '2018-02-24T15:47:11.010232', 'edx.course.enrollment.activated', 'audit'),
+            ('2018-02-25', ('course-v1:SHUMBAX+ADM101+2016_8', 111), '2018-02-24T15:47:11.010232', 'edx.course.enrollment.activated', 'audit'),
+            ('2018-02-26', ('course-v1:SHUMBAX+ADM101+2016_8', 111), '2018-02-24T15:47:11.010232', 'edx.course.enrollment.activated', 'audit'),
+        """
         for line in lines:
             event_row = self.get_event_row_from_line(line)
             if not event_row:
                 continue
             date_string, (course_id, user_id, timestamp, event_type, mode) = event_row
+            # reformat data for aggregation
             event_row = (date_string, (course_id, user_id), timestamp, event_type, mode)
-            log.info("event_row={}".format(event_row))
             raw_events.append(event_row)
-
-        log.debug("raw_events: {}".format(raw_events))
 
         columns = ['date_string', 'course_id+user_id', 'timestamp', 'event_type', 'mode']
 
         df = pd.DataFrame(data=raw_events, columns=columns)
 
+        increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name, 1)
+
         for (date_string, (course_id, user_id)), group in df.groupby(['date_string', 'course_id+user_id']):
-            values = group.get_values()
-            increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name, 1)
+            values = group[['timestamp', 'event_type', 'mode']].get_values()
 
             event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, values,
                                                            increment_counter)

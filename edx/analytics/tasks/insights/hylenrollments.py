@@ -134,7 +134,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
     def run(self):
         log.info('test-run')
-
+        super(CourseEnrollmentEventsTask, self).run()
         if not self.completed:
             self.completed = True
 
@@ -201,8 +201,7 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         return CourseEnrollmentEventsTask(
             interval=overwrite_interval,
             source=self.source,
-            pattern=self.pattern,
-            overwrite=True,
+            pattern=self.pattern
         )
 
     def requires(self):
@@ -299,15 +298,15 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
 
 
 @workflow_entry_point
-class HylImportEnrollmentsIntoMysql(OverwriteMysqlDownstreamMixin, luigi.WrapperTask):
+class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMysqlDownstreamMixin, luigi.WrapperTask):
     """Import all breakdowns of enrollment into MySQL."""
 
     def requires(self):
         enrollment_kwargs = {
-            # 'source': self.source,
-            # 'interval': self.interval,
-            # 'pattern': self.pattern,
-            # 'overwrite_n_days': self.overwrite_n_days,
+            'source': self.source,
+            'interval': self.interval,
+            'pattern': self.pattern,
+            'overwrite_n_days': self.overwrite_n_days,
             'overwrite_mysql': self.overwrite_mysql,
         }
         #

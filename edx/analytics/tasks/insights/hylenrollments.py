@@ -981,6 +981,13 @@ class EnrollmentByEducationLevelMysqlTask(
     def columns(self):
         return EnrollmentByEducationLevelRecord.get_sql_schema()
 
+    def rows(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        for row in query_result:
+            yield row
+
     @property
     def indexes(self):
         return [

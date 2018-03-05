@@ -8,7 +8,7 @@ import pandas as pd
 from luigi import Task
 from luigi.parameter import DateIntervalParameter
 
-from common.sqoop import SqoopImportMixin
+from edx.analytics.tasks.common.sqoop import SqoopImportMixin
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
 from edx.analytics.tasks.util import eventlog, opaque_key_util
 from edx.analytics.tasks.util.decorators import workflow_entry_point

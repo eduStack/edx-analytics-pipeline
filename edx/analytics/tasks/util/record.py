@@ -599,6 +599,36 @@ class StringField(Field):  # pylint: disable=abstract-method
             return 'VARCHAR'
 
 
+class LongTextField(Field):  # pylint: disable=abstract-method
+    """Represents a field that contains a relatively short string."""
+
+    hive_type = 'LONGTEXT'
+    bigquery_type = 'LONGTEXT'
+    elasticsearch_type = 'LONGTEXT'
+
+    def validate_parameters(self):
+        if not hasattr(self, 'truncate'):
+            self.truncate = False
+
+    def validate(self, value):
+        validation_errors = super(LongTextField, self).validate(value)
+        if value is not None:
+            if not isinstance(value, basestring):
+                validation_errors.append('The value is not a string')
+        return validation_errors
+
+    def serialize_to_string(self, value):
+        """Returns a unicode string representation of a value for this field, truncating if required."""
+        try:
+            return unicode(value, encoding=getattr(self, 'encoding', 'utf8'))
+        except TypeError:
+            # It's already a unicode string
+            return value
+
+    @property
+    def sql_base_type(self):
+        return 'LONGTEXT'
+
 class DelimitedStringField(Field):
     """Represents a list of strings, stored as a single delimited string."""
 

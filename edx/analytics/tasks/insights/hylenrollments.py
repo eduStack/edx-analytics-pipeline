@@ -12,7 +12,8 @@ from edx.analytics.tasks.common.sqoop import SqoopImportMixin
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
 from edx.analytics.tasks.util import eventlog, opaque_key_util
 from edx.analytics.tasks.util.decorators import workflow_entry_point
-from edx.analytics.tasks.util.record import BooleanField, DateField, DateTimeField, IntegerField, Record, StringField
+from edx.analytics.tasks.util.record import BooleanField, DateField, DateTimeField, IntegerField, Record, StringField, \
+    LongTextField
 from edx.analytics.tasks.util.url import ExternalURL, UncheckedExternalURL, get_target_from_url, url_path_join
 from edx.analytics.tasks.common.pathutil import (
     EventLogSelectionDownstreamMixin, EventLogSelectionMixin, PathSelectionByDateIntervalTask
@@ -304,10 +305,10 @@ class AuthUserProfileRecord(Record):
     level_of_education = StringField(length=6, description='The level_of_education of the learner.')
     language = StringField(length=255, nullable=False, description='The language of the learner.')
     location = StringField(length=255, nullable=False, description='The location of the learner.')
-    mailing_address = StringField(length=255, description='The mailing_address of the learner.')
-    city = StringField(length=255, description='The city of the learner.')
-    country = StringField(length=255, description='The country of the learner.')
-    goals = StringField(length=255, description='The goals of the learner.')
+    mailing_address = LongTextField(description='The mailing_address of the learner.')
+    city = LongTextField(description='The city of the learner.')
+    country = StringField(length=2, description='The country of the learner.')
+    goals = LongTextField(description='The goals of the learner.')
 
 
 class EnrollmentByGenderRecord(Record):
@@ -529,10 +530,10 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         if len(args) == 2:
             # backwards compatibility with existing hadoop jobs
             group_name, count = args
-            log.debug('reporter:counter:%s,%s' % (group_name, count))
+            # log.debug('reporter:counter:%s,%s' % (group_name, count))
         else:
             group, name, count = args
-            log.debug('reporter:counter:%s,%s,%s' % (group, name, count))
+            # log.debug('reporter:counter:%s,%s,%s' % (group, name, count))
 
     def incr_counter(self, *args, **kwargs):
         """ Increments a Hadoop counter

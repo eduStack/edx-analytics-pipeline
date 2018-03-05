@@ -333,6 +333,18 @@ class EnrollmentByBirthYearRecord(Record):
     )
 
 
+class EnrollmentByEducationLevelRecord(Record):
+    """Summarizes a course's enrollment by education level and date."""
+    date = DateField(length=255, nullable=False, description='Enrollment date.')
+    course_id = StringField(length=255, nullable=False, description='The course the learners are enrolled in.')
+    education_level = StringField(length=16, description='The education level of the learner.')
+    count = IntegerField(description='The number of learners with this education level in the course on this date.')
+    cumulative_count = IntegerField(
+        description='The count of learners with this education level that ever enrolled in this course on or before '
+                    'this date.'
+    )
+
+
 class ImportAuthUserProfileTask(MysqlInsertTask):
     """
     Imports user demographic information from an external LMS DB to both a
@@ -892,6 +904,108 @@ class EnrollmentByBirthYearToMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnro
             ImportAuthUserProfileTask()
         )
 
+
+class EnrollmentByEducationLevelMysqlTask(
+    OverwriteMysqlDownstreamMixin,
+    CourseEnrollmentDownstreamMixin,
+    MysqlInsertTask
+):
+    """
+    Breakdown of enrollments by education level as reported by the user.
+
+    During operations: The object at insert_source_task is opened and each row is treated as a row to be inserted.
+    At the end of this task data has been written to MySQL.  Overwrite functionality is complex and configured through
+    the OverwriteHiveAndMysqlDownstreamMixin, so we default the standard overwrite parameter to None.
+    """
+    overwrite = None
+
+    def __init__(self, *args, **kwargs):
+        super(EnrollmentByEducationLevelMysqlTask, self).__init__(*args, **kwargs)
+        self.overwrite = self.overwrite_mysql
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'course_enrollment_education_level_daily'
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        query = """
+                    SELECT
+                        ce.`date`,
+                        ce.course_id,
+                        CASE p.level_of_education
+                            WHEN 'el'    THEN 'primary'
+                            WHEN 'jhs'   THEN 'junior_secondary'
+                            WHEN 'hs'    THEN 'secondary'
+                            WHEN 'a'     THEN 'associates'
+                            WHEN 'b'     THEN 'bachelors'
+                            WHEN 'm'     THEN 'masters'
+                            WHEN 'p'     THEN 'doctorate'
+                            WHEN 'p_se'  THEN 'doctorate'
+                            WHEN 'p_oth' THEN 'doctorate'
+                            WHEN 'none'  THEN 'none'
+                            WHEN 'other' THEN 'other'
+                            ELSE NULL
+                        END,
+                        SUM(ce.at_end),
+                        COUNT(ce.user_id)
+                    FROM course_enrollment ce
+                    LEFT OUTER JOIN auth_userprofile p ON p.user_id = ce.user_id
+                    WHERE ce.`date` = '{date}'
+                    GROUP BY
+                        ce.`date`,
+                        ce.course_id,
+                        CASE p.level_of_education
+                            WHEN 'el'    THEN 'primary'
+                            WHEN 'jhs'   THEN 'junior_secondary'
+                            WHEN 'hs'    THEN 'secondary'
+                            WHEN 'a'     THEN 'associates'
+                            WHEN 'b'     THEN 'bachelors'
+                            WHEN 'm'     THEN 'masters'
+                            WHEN 'p'     THEN 'doctorate'
+                            WHEN 'p_se'  THEN 'doctorate'
+                            WHEN 'p_oth' THEN 'doctorate'
+                            WHEN 'none'  THEN 'none'
+                            WHEN 'other' THEN 'other'
+                            ELSE NULL
+                        END
+                """.format(date=self.query_date)
+        return query
+
+    @property
+    def columns(self):
+        return EnrollmentByEducationLevelRecord.get_sql_schema()
+
+    @property
+    def indexes(self):
+        return [
+            ('course_id',),
+            # Note that the order here is extremely important. The API query pattern needs to filter first by course and
+            # then by date.
+            ('course_id', 'date'),
+        ]
+
+    def requires(self):
+        yield super(EnrollmentByEducationLevelMysqlTask, self).requires()['credentials']
+
+        # the process that generates the source table used by this query
+        yield (
+            CourseEnrollmentTask(
+                overwrite_mysql=self.overwrite_mysql,
+                source=self.source,
+                interval=self.interval,
+                pattern=self.pattern,
+                overwrite_n_days=self.overwrite_n_days
+            ),
+            ImportAuthUserProfileTask()
+        )
+
+
 @workflow_entry_point
 class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMysqlDownstreamMixin, luigi.WrapperTask):
     """Import all breakdowns of enrollment into MySQL."""
@@ -925,8 +1039,8 @@ class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMy
             # load_internal_reporting_user_course jobs.
             # CourseEnrollmentSummaryPartitionTask(**course_enrollment_summary_args),
             #
-            EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
-            # EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
+            # EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
+            EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
             # EnrollmentByGenderMysqlTask(**enrollment_kwargs),
             # EnrollmentDailyMysqlTask(**enrollment_kwargs),
             # CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),

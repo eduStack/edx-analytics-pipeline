@@ -7,6 +7,8 @@ import luigi.task
 import pandas as pd
 from luigi import Task
 from luigi.parameter import DateIntervalParameter
+
+from common.sqoop import SqoopImportMixin
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
 from edx.analytics.tasks.util import eventlog, opaque_key_util
 from edx.analytics.tasks.util.decorators import workflow_entry_point
@@ -293,6 +295,120 @@ class EnrollmentDailyRecord(Record):
                                                 'this date.')
 
 
+class AuthUserProfileRecord(Record):
+    """A user's profile."""
+    user_id = IntegerField(description='The user_id of the learner.')
+    name = StringField(nullable=False, description='The name of the learner.')
+    gender = StringField(length=6, description='The gender of the learner.')
+    year_of_birth = IntegerField(description='The year_of_birth of the learner.')
+    level_of_education = StringField(length=6, description='The level_of_education of the learner.')
+    language = StringField(nullable=False, description='The language of the learner.')
+    location = StringField(nullable=False, description='The location of the learner.')
+    mailing_address = StringField(description='The mailing_address of the learner.')
+    city = StringField(description='The city of the learner.')
+    country = StringField(description='The country of the learner.')
+    goals = StringField(description='The goals of the learner.')
+
+
+class EnrollmentByGenderRecord(Record):
+    """Summarizes a course's enrollment by gender and date."""
+    date = DateField(nullable=False, description='Enrollment date.')
+    course_id = StringField(length=255, nullable=False, description='The course the learners are enrolled in.')
+    gender = StringField(length=6, description='The gender of the learner.')
+    count = IntegerField(description='The number of learners in the course with this gender on this date.')
+    cumulative_count = IntegerField(description='The count of learners that ever enrolled with this gender in this '
+                                                'course on or before this date.')
+
+
+class ImportAuthUserProfileTask(MysqlInsertTask):
+    """
+    Imports user demographic information from an external LMS DB to both a
+    destination directory and a HIVE metastore.
+
+    """
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'auth_userprofile'
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
+
+    @property
+    def columns(self):
+        return AuthUserProfileRecord.get_sql_schema()
+
+    @property
+    def indexes(self):
+        return [
+            ('user_id',),
+            # Note that the order here is extremely important. The API query pattern needs to filter first by course and
+            # then by date.
+            ('user_id', 'gender'),
+        ]
+
+    def requires_local(self):
+        return AuthUserProfileSelectionTask()
+
+    def requires(self):
+        for requirement in super(ImportAuthUserProfileTask, self).requires().itervalues():
+            yield requirement
+
+        requires_local = self.requires_local()
+        if isinstance(requires_local, luigi.Task):
+            yield requires_local
+
+
+class AuthUserProfileSelectionTask(SqoopImportMixin, luigi.Task):
+    completed = False
+
+    def complete(self):
+        return self.completed
+        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        query = """
+                SELECT 
+                    user_id,
+                    `name`,
+                    gender,
+                    year_of_birth,
+                    level_of_education,
+                    `language`,
+                    location,
+                    mailing_address,
+                    city,
+                    country,
+                    goals
+                FROM auth_userprofile
+            """
+        return query
+
+    def output(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        for row in query_result:
+            yield row
+
+    def run(self):
+        log.info('AuthUserProfileSelectionTask running')
+        if not self.completed:
+            self.completed = True
+
+    def requires(self):
+        yield ExternalURL(url=self.credentials)
+
+
 class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
     """
     Task to extract enrollment events from eventlogs over a given interval.
@@ -410,10 +526,10 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         if len(args) == 2:
             # backwards compatibility with existing hadoop jobs
             group_name, count = args
-            # log.debug('reporter:counter:%s,%s' % (group_name, count))
+            log.debug('reporter:counter:%s,%s' % (group_name, count))
         else:
             group, name, count = args
-            # log.debug('reporter:counter:%s,%s,%s' % (group, name, count))
+            log.debug('reporter:counter:%s,%s,%s' % (group, name, count))
 
     def incr_counter(self, *args, **kwargs):
         """ Increments a Hadoop counter
@@ -617,6 +733,86 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
         )
 
 
+class EnrollmentByGenderMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
+                                  MysqlInsertTask):
+    """
+    A history of the number of students enrolled in each course at the end of each day.
+
+    During operations: The object at insert_source_task is opened and each row is treated as a row to be inserted.
+    At the end of this task data has been written to MySQL.  Overwrite functionality is complex and configured through
+    the OverwriteHiveAndMysqlDownstreamMixin, so we default the standard overwrite parameter to None.
+    """
+    overwrite = None
+
+    def __init__(self, *args, **kwargs):
+        super(EnrollmentByGenderMysqlTask, self).__init__(*args, **kwargs)
+        self.overwrite = self.overwrite_mysql
+        self.overwrite_from_date = self.interval.date_b - datetime.timedelta(days=self.overwrite_n_days)
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'course_enrollment_gender_daily'
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        query = """
+            SELECT
+                ce.`date`,
+                ce.course_id,
+                IF(p.gender != '', p.gender, NULL),
+                SUM(ce.at_end),
+                COUNT(ce.user_id)
+            FROM course_enrollment ce
+            LEFT OUTER JOIN auth_userprofile p ON p.user_id = ce.user_id
+            GROUP BY
+                ce.`date`,
+                ce.course_id,
+                IF(p.gender != '', p.gender, NULL)
+        """
+        return query
+
+    def rows(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        for row in query_result:
+            yield row
+
+    @property
+    def columns(self):
+        return EnrollmentByGenderRecord.get_sql_schema()
+
+    @property
+    def indexes(self):
+        return [
+            ('course_id',),
+            # Note that the order here is extremely important. The API query pattern needs to filter first by course and
+            # then by date.
+            ('course_id', 'date'),
+        ]
+
+    def requires(self):
+        for requirement in super(EnrollmentByGenderMysqlTask, self).requires().itervalues():
+            yield requirement
+
+        # the process that generates the source table used by this query
+        yield (
+            CourseEnrollmentTask(
+                overwrite_mysql=self.overwrite_mysql,
+                source=self.source,
+                interval=self.interval,
+                pattern=self.pattern,
+                overwrite_n_days=self.overwrite_n_days
+            ),
+            ImportAuthUserProfileTask()
+        )
+
+
 @workflow_entry_point
 class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMysqlDownstreamMixin, luigi.WrapperTask):
     """Import all breakdowns of enrollment into MySQL."""
@@ -646,16 +842,14 @@ class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMy
         # })
 
         yield [
-            # TestTask1(**test1_kwargs),
-            # TestTask2(**test2_kwargs)
             # The S3 data generated by this job is used by the load_warehouse_bigquery and
             # load_internal_reporting_user_course jobs.
             # CourseEnrollmentSummaryPartitionTask(**course_enrollment_summary_args),
             #
-            # EnrollmentByGenderMysqlTask(**enrollment_kwargs),
+            EnrollmentByGenderMysqlTask(**enrollment_kwargs),
             # EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
             # EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
-            EnrollmentDailyMysqlTask(**enrollment_kwargs),
+            # EnrollmentDailyMysqlTask(**enrollment_kwargs),
             # CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
         ]
         # if self.enable_course_catalog:

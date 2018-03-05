@@ -321,6 +321,18 @@ class EnrollmentByGenderRecord(Record):
                                                 'course on or before this date.')
 
 
+class EnrollmentByBirthYearRecord(Record):
+    """Summarizes a course's enrollments by birth year and date."""
+    date = DateField(length=255, nullable=False, description='Enrollment date.')
+    course_id = StringField(length=255, nullable=False, description='The course the learners are enrolled in.')
+    birth_year = IntegerField(description='The birth year of the learner.')
+    count = IntegerField(description='The number of learners with this birth year enrolled in the course on this date.')
+    cumulative_count = IntegerField(
+        description='The count of learners with this birth year that ever enrolled in this course on or before this '
+                    'date.'
+    )
+
+
 class ImportAuthUserProfileTask(MysqlInsertTask):
     """
     Imports user demographic information from an external LMS DB to both a
@@ -748,8 +760,6 @@ class EnrollmentByGenderMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmen
 
     def __init__(self, *args, **kwargs):
         super(EnrollmentByGenderMysqlTask, self).__init__(*args, **kwargs)
-        self.overwrite = self.overwrite_mysql
-        self.overwrite_from_date = self.interval.date_b - datetime.timedelta(days=self.overwrite_n_days)
 
     @property
     def insert_source_task(self):  # pragma: no cover
@@ -814,6 +824,74 @@ class EnrollmentByGenderMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmen
         )
 
 
+class EnrollmentByBirthYearToMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
+                                       MysqlInsertTask):
+    """
+    Breakdown of enrollments by birth year as reported by the user.
+
+    During operations: The object at insert_source_task is opened and each row is treated as a row to be inserted.
+    At the end of this task data has been written to MySQL.  Overwrite functionality is complex and configured through
+    the OverwriteHiveAndMysqlDownstreamMixin, so we default the standard overwrite parameter to None.
+    """
+    overwrite = None
+
+    def __init__(self, *args, **kwargs):
+        super(EnrollmentByBirthYearToMysqlTask, self).__init__(*args, **kwargs)
+        self.overwrite = self.overwrite_mysql
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'course_enrollment_birth_year_daily'
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        return """
+            SELECT
+                ce.`date`,
+                ce.course_id,
+                p.year_of_birth,
+                SUM(ce.at_end),
+                COUNT(ce.user_id)
+            FROM course_enrollment ce
+            LEFT OUTER JOIN auth_userprofile p ON p.user_id = ce.user_id
+            WHERE ce.`date` = '{date}'
+            GROUP BY
+                ce.`date`,
+                ce.course_id,
+                p.year_of_birth
+        """.format(date=self.query_date)
+
+    @property
+    def columns(self):
+        return EnrollmentByBirthYearRecord.get_sql_schema()
+
+    def rows(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        for row in query_result:
+            yield row
+
+    def requires(self):
+        yield super(EnrollmentByBirthYearToMysqlTask, self).requires()['credentials']
+
+        # the process that generates the source table used by this query
+        yield (
+            CourseEnrollmentTask(
+                overwrite_mysql=self.overwrite_mysql,
+                source=self.source,
+                interval=self.interval,
+                pattern=self.pattern,
+                overwrite_n_days=self.overwrite_n_days
+            ),
+            ImportAuthUserProfileTask()
+        )
+
 @workflow_entry_point
 class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMysqlDownstreamMixin, luigi.WrapperTask):
     """Import all breakdowns of enrollment into MySQL."""
@@ -847,10 +925,10 @@ class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMy
             # load_internal_reporting_user_course jobs.
             # CourseEnrollmentSummaryPartitionTask(**course_enrollment_summary_args),
             #
-            # EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
+            EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
             # EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
-            EnrollmentDailyMysqlTask(**enrollment_kwargs),
-            EnrollmentByGenderMysqlTask(**enrollment_kwargs),
+            # EnrollmentByGenderMysqlTask(**enrollment_kwargs),
+            # EnrollmentDailyMysqlTask(**enrollment_kwargs),
             # CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
         ]
         # if self.enable_course_catalog:

@@ -327,6 +327,9 @@ class ImportAuthUserProfileTask(MysqlInsertTask):
 
     """
 
+    def __init__(self, *args, **kwargs):
+        super(ImportAuthUserProfileTask, self).__init__(*args, **kwargs)
+
     @property
     def insert_source_task(self):  # pragma: no cover
         return None

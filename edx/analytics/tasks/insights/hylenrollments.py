@@ -298,16 +298,16 @@ class EnrollmentDailyRecord(Record):
 class AuthUserProfileRecord(Record):
     """A user's profile."""
     user_id = IntegerField(description='The user_id of the learner.')
-    name = StringField(nullable=False, description='The name of the learner.')
+    name = StringField(length=255, nullable=False, description='The name of the learner.')
     gender = StringField(length=6, description='The gender of the learner.')
     year_of_birth = IntegerField(description='The year_of_birth of the learner.')
     level_of_education = StringField(length=6, description='The level_of_education of the learner.')
-    language = StringField(nullable=False, description='The language of the learner.')
-    location = StringField(nullable=False, description='The location of the learner.')
-    mailing_address = StringField(description='The mailing_address of the learner.')
-    city = StringField(description='The city of the learner.')
-    country = StringField(description='The country of the learner.')
-    goals = StringField(description='The goals of the learner.')
+    language = StringField(length=255, nullable=False, description='The language of the learner.')
+    location = StringField(length=255, nullable=False, description='The location of the learner.')
+    mailing_address = StringField(length=255, description='The mailing_address of the learner.')
+    city = StringField(length=255, description='The city of the learner.')
+    country = StringField(length=255, description='The country of the learner.')
+    goals = StringField(length=255, description='The goals of the learner.')
 
 
 class EnrollmentByGenderRecord(Record):
@@ -510,7 +510,8 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
                     df = pd.DataFrame(data=raw_events, columns=columns)
 
-                    increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name, 1)
+                    increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name,
+                                                                               1)
 
                     for (date_string, (course_id, user_id)), group in df.groupby(['date_string', 'course_id+user_id']):
                         values = group[['timestamp', 'event_type', 'mode']].get_values()

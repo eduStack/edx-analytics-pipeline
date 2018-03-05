@@ -361,8 +361,7 @@ class ImportAuthUserProfileTask(MysqlInsertTask):
         return AuthUserProfileSelectionTask()
 
     def requires(self):
-        for requirement in super(ImportAuthUserProfileTask, self).requires().itervalues():
-            yield requirement
+        yield super(ImportAuthUserProfileTask, self).requires()['credentials']
 
         requires_local = self.requires_local()
         if isinstance(requires_local, luigi.Task):
@@ -638,8 +637,7 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         )
 
     def requires(self):
-        for requirement in super(CourseEnrollmentTask, self).requires().itervalues():
-            yield requirement
+        yield super(CourseEnrollmentTask, self).requires()['credentials']
 
         requires_local = self.requires_local()
         if isinstance(requires_local, luigi.Task):
@@ -721,8 +719,7 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
             return None
 
     def requires(self):
-        for requirement in super(EnrollmentDailyMysqlTask, self).requires().itervalues():
-            yield requirement
+        yield super(EnrollmentDailyMysqlTask, self).requires()['credentials']
 
         # the process that generates the source table used by this query
         yield (
@@ -800,8 +797,7 @@ class EnrollmentByGenderMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmen
         ]
 
     def requires(self):
-        for requirement in super(EnrollmentByGenderMysqlTask, self).requires().itervalues():
-            yield requirement
+        yield super(EnrollmentByGenderMysqlTask, self).requires()['credentials']
 
         # the process that generates the source table used by this query
         yield (
@@ -849,10 +845,10 @@ class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMy
             # load_internal_reporting_user_course jobs.
             # CourseEnrollmentSummaryPartitionTask(**course_enrollment_summary_args),
             #
-            EnrollmentByGenderMysqlTask(**enrollment_kwargs),
             # EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
             # EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
-            # EnrollmentDailyMysqlTask(**enrollment_kwargs),
+            EnrollmentDailyMysqlTask(**enrollment_kwargs),
+            EnrollmentByGenderMysqlTask(**enrollment_kwargs),
             # CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
         ]
         # if self.enable_course_catalog:

@@ -18,6 +18,9 @@ from edx.analytics.tasks.util.url import ExternalURL, UncheckedExternalURL, get_
 from edx.analytics.tasks.common.pathutil import (
     EventLogSelectionDownstreamMixin, EventLogSelectionMixin, PathSelectionByDateIntervalTask
 )
+from edx.analytics.tasks.warehouse.load_internal_reporting_course_catalog import (
+    CoursePartitionTask, LoadInternalReportingCourseCatalogMixin, ProgramCoursePartitionTask
+)
 
 log = logging.getLogger(__name__)
 DEACTIVATED = 'edx.course.enrollment.deactivated'
@@ -82,6 +85,16 @@ class CourseEnrollmentDownstreamMixin(EventLogSelectionDownstreamMixin):
 
         if not self.interval:
             self.interval = luigi.date_interval.Custom(self.interval_start, self.interval_end)
+
+
+class CourseSummaryEnrollmentDownstreamMixin(CourseEnrollmentDownstreamMixin, LoadInternalReportingCourseCatalogMixin):
+    """Combines course enrollment and catalog parameters."""
+
+    enable_course_catalog = luigi.BooleanParameter(
+        config_path={'section': 'course-summary-enrollment', 'name': 'enable_course_catalog'},
+        default=False,
+        description="Enables course catalog data jobs."
+    )
 
 
 class EnrollmentEvent(object):
@@ -276,6 +289,98 @@ class DaysEnrolledForEvents(object):
         self.mode = self.event.mode
 
 
+class DaysEnrolledSummaryForEvents(object):
+    counter_category_name = 'Enrollment Summary'
+
+    def __init__(self, course_id, user_id, events, increment_counter=None):
+        self.incr_counter = increment_counter
+        sorted_events = sorted(events)
+        sorted_events = [
+            EnrollmentEvent(timestamp, event_type, mode) for timestamp, event_type, mode in sorted_events
+        ]
+        first_enroll_event = None
+        last_unenroll_event = None
+        first_event_by_mode = {}
+        most_recent_mode = None
+        state = UNENROLLED
+
+        for event in sorted_events:
+            is_enrolled_mode_change = (state == ENROLLED and event.event_type == MODE_CHANGED)
+            is_enrolled_deactivate = (state == ENROLLED and event.event_type == DEACTIVATED)
+            is_unenrolled_activate = (state == UNENROLLED and event.event_type == ACTIVATED)
+
+            if is_enrolled_deactivate:
+                self.incr_counter(self.counter_category_name, 'Subset Unenrollment', 1)
+                state = UNENROLLED
+                last_unenroll_event = event
+                # If we see more than one deactivate in a row, we only consider the first one as the last unenrollment.
+                if event.mode != most_recent_mode:
+                    self.incr_counter(self.counter_category_name, 'Deactivation Mode Changed', 1)
+            elif is_unenrolled_activate or is_enrolled_mode_change:
+                if event.event_type == ACTIVATED:
+                    self.incr_counter(self.counter_category_name, 'Subset Enrollment', 1)
+                    # If we see multiple activation events in a row, consider the first one to be the first enrollment.
+                    state = ENROLLED
+                    if first_enroll_event is None:
+                        first_enroll_event = event
+
+                if event.event_type == MODE_CHANGED:
+                    if event.mode == most_recent_mode:
+                        self.incr_counter(self.counter_category_name, 'Subset Unchanged', 1)
+                        self.incr_counter(self.counter_category_name, 'Subset Unchanged Mode', 1)
+                    else:
+                        self.incr_counter(self.counter_category_name, 'Subset Mode Change', 1)
+
+                # The most recent mode is computed from the activation and mode changes. If we see a different mode
+                # on the deactivation event, it is ignored. It's unclear in many of these cases which event to trust,
+                # so fairly arbitrary decisions have been made.
+                most_recent_mode = event.mode
+                if event.mode not in first_event_by_mode:
+                    first_event_by_mode[event.mode] = event
+            else:
+                # increment counters for invalid events
+                self.incr_counter(self.counter_category_name, 'Subset Unchanged', 1)
+                if state == ENROLLED and event.event_type == ACTIVATED:
+                    if event.mode == most_recent_mode:
+                        self.incr_counter(self.counter_category_name, 'Subset Unchanged Already Enrolled', 1)
+                    else:
+                        # We do not consider an activation with a different mode to actually change the mode,
+                        # if the user is already enrolled.
+                        self.incr_counter(self.counter_category_name,
+                                          'Subset Unchanged Enrolled Activation Mode Change', 1)
+                elif state == UNENROLLED:
+                    if event.event_type == DEACTIVATED:
+                        self.incr_counter(self.counter_category_name, 'Subset Unchanged Already Unenrolled', 1)
+                    elif event.event_type == MODE_CHANGED:
+                        self.incr_counter(self.counter_category_name, 'Subset Unchanged Unenrolled Mode Change', 1)
+
+        if first_enroll_event is None:
+            # The user only has deactivate and mode change events... that's odd, just throw away the record.
+            self.incr_counter(self.counter_category_name, 'Discard User_Course With Missing Enrollment Event', 1)
+            return
+
+        record = EnrollmentSummaryRecord(
+            course_id=course_id,
+            user_id=int(user_id),
+            current_enrollment_mode=most_recent_mode,
+            current_enrollment_is_active=(state == ENROLLED),
+            first_enrollment_mode=first_enroll_event.mode,
+            first_enrollment_time=self.format_timestamp(first_enroll_event),
+            last_unenrollment_time=self.format_timestamp(last_unenroll_event),
+            first_verified_enrollment_time=self.format_timestamp(first_event_by_mode.get('verified')),
+            first_credit_enrollment_time=self.format_timestamp(first_event_by_mode.get('credit')),
+            end_time=DateTimeField().deserialize_from_string(self.interval.date_b.isoformat())
+        )
+        yield record.to_string_tuple()
+
+    @staticmethod
+    def format_timestamp(event):
+        """Given an event, return a datetime object for its timestamp."""
+        if event is None or event.timestamp is None:
+            return None
+        return DateTimeField().deserialize_from_string(event.timestamp)
+
+
 class CourseEnrollmentRecord(Record):
     """A user's enrollment history."""
     date = DateField(nullable=False, description='Enrollment date.')
@@ -343,6 +448,52 @@ class EnrollmentByEducationLevelRecord(Record):
         description='The count of learners with this education level that ever enrolled in this course on or before '
                     'this date.'
     )
+
+
+class EnrollmentSummaryRecord(Record):
+    """Summarizes a user's enrollment history for a particular course."""
+
+    course_id = StringField(length=255, nullable=False, description='Course the learner enrolled in.')
+    user_id = IntegerField(nullable=False, description='The user\'s numeric identifier.')
+    current_enrollment_mode = StringField(
+        length=100,
+        nullable=False,
+        description='The last mode seen on an activation or mode change event.'
+    )
+    current_enrollment_is_active = BooleanField(
+        nullable=False,
+        description='True if the user is currently enrolled as of the end of the interval.'
+    )
+    first_enrollment_mode = StringField(length=100, nullable=True, description='The mode the user first enrolled with.')
+    first_enrollment_time = DateTimeField(nullable=True, description='The time of the user\'s first enrollment.')
+    last_unenrollment_time = DateTimeField(nullable=True, description='The time of the user\'s last unenrollment.')
+    first_verified_enrollment_time = DateTimeField(
+        nullable=True,
+        description='The time the user first switched to the verified track.'
+    )
+    first_credit_enrollment_time = DateTimeField(
+        nullable=True,
+        description='The time the user first switched to the credit track.'
+    )
+    end_time = DateTimeField(nullable=False, description='The end of the interval that was analyzed.')
+
+
+class CourseSummaryEnrollmentRecord(Record):
+    """Recent enrollment summary and metadata for a course."""
+    course_id = StringField(nullable=False, length=255, description='A unique identifier of the course')
+    catalog_course_title = StringField(nullable=True, length=255, normalize_whitespace=True,
+                                       description='The name of the course')
+    catalog_course = StringField(nullable=True, length=255, description='Course identifier without run')
+    start_time = DateTimeField(nullable=True, description='The date and time that the course begins')
+    end_time = DateTimeField(nullable=True, description='The date and time that the course ends')
+    pacing_type = StringField(nullable=True, length=255, description='The type of pacing for this course')
+    availability = StringField(nullable=True, length=255, description='Availability status of the course')
+    enrollment_mode = StringField(length=100, nullable=False, description='Enrollment mode for the enrollment counts')
+    count = IntegerField(nullable=True, description='The count of currently enrolled learners')
+    count_change_7_days = IntegerField(nullable=True,
+                                       description='Difference in enrollment counts over the past 7 days')
+    cumulative_count = IntegerField(nullable=True, description='The cumulative total of all users ever enrolled')
+    passing_users = IntegerField(nullable=True, description='The count of currently passing learners')
 
 
 class ImportAuthUserProfileTask(MysqlInsertTask):
@@ -1013,8 +1164,78 @@ class EnrollmentByEducationLevelMysqlTask(
         )
 
 
+class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
+                                           IncrementalMysqlInsertTask):
+    """Hive partition that stores the set of users enrolled in each course over time."""
+    overwrite = None
+
+    def __init__(self, *args, **kwargs):
+        super(CourseMetaSummaryEnrollmentIntoMysql, self).__init__(*args, **kwargs)
+        self.overwrite = self.overwrite_mysql
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'course_meta_summary_enrollment'
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        end_date = self.interval.date_b - datetime.timedelta(days=1)
+        start_date = end_date - datetime.timedelta(days=7)
+
+        query = """
+            SELECT enrollment_end.course_id,
+                   course.catalog_course_title,
+                   course.catalog_course,
+                   course.start_time,
+                   course.end_time,
+                   course.pacing_type,
+                   course.availability,
+                   enrollment_end.mode,
+                   enrollment_end.count,
+                   (enrollment_end.count - COALESCE(enrollment_start.count, 0)) AS count_change_7_days,
+                   enrollment_end.cumulative_count,
+                   course_grade_by_mode.passing_users
+            FROM   course_enrollment_mode_daily enrollment_end
+                   LEFT OUTER JOIN course_enrollment_mode_daily enrollment_start
+                                ON enrollment_start.course_id = enrollment_end.course_id
+                               AND enrollment_start.mode = enrollment_end.mode
+                               AND enrollment_start.`date` = '{start_date}'
+                   LEFT OUTER JOIN course_catalog course
+                                ON course.course_id = enrollment_end.course_id
+                   LEFT OUTER JOIN course_grade_by_mode
+                                ON enrollment_end.course_id = course_grade_by_mode.course_id
+                               AND enrollment_end.mode = course_grade_by_mode.mode
+            WHERE  enrollment_end.`date` = '{end_date}'
+        """.format(
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+        )
+        return query
+
+    def rows(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        for row in query_result:
+            yield row
+
+    @property
+    def columns(self):
+        return CourseSummaryEnrollmentRecord.get_sql_schema()
+
+    @property
+    def indexes(self):
+        return [('course_id',)]
+
+    def requires(self):
+        for req in super(CourseMetaSummaryEnrollmentIntoMysql, self).requires():
+            yield req
+
+
 @workflow_entry_point
-class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMysqlDownstreamMixin, luigi.WrapperTask):
+class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, OverwriteMysqlDownstreamMixin,
+                                    luigi.WrapperTask):
     """Import all breakdowns of enrollment into MySQL."""
 
     def requires(self):
@@ -1025,14 +1246,14 @@ class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMy
             'overwrite_n_days': self.overwrite_n_days,
             'overwrite_mysql': self.overwrite_mysql,
         }
-        #
-        # course_summary_kwargs = dict({
-        #     'date': self.date,
-        #     'api_root_url': self.api_root_url,
-        #     'api_page_size': self.api_page_size,
-        #     'enable_course_catalog': self.enable_course_catalog,
-        # }, **enrollment_kwargs)
-        #
+
+        course_summary_kwargs = dict({
+            'date': self.date,
+            'api_root_url': self.api_root_url,
+            'api_page_size': self.api_page_size,
+            'enable_course_catalog': self.enable_course_catalog,
+        }, **enrollment_kwargs)
+
         # course_enrollment_summary_args = dict({
         #     'source': self.source,
         #     'interval': self.interval,
@@ -1047,10 +1268,10 @@ class HylImportEnrollmentsIntoMysql(CourseEnrollmentDownstreamMixin, OverwriteMy
             # CourseEnrollmentSummaryPartitionTask(**course_enrollment_summary_args),
             #
             # EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
-            EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
+            # EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
             # EnrollmentByGenderMysqlTask(**enrollment_kwargs),
             # EnrollmentDailyMysqlTask(**enrollment_kwargs),
-            # CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
+            CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
         ]
         # if self.enable_course_catalog:
         #     yield CourseProgramMetadataInsertToMysqlTask(**course_summary_kwargs)

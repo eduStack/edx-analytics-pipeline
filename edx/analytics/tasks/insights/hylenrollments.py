@@ -1,25 +1,24 @@
 """Compute metrics related to user enrollments in courses"""
-import gzip
-import sys
 import datetime
+import gzip
 import logging
+
 import luigi.task
 import pandas as pd
-from luigi import Task
 from luigi.parameter import DateIntervalParameter
 
-from edx.analytics.tasks.common.sqoop import SqoopImportMixin
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
+from edx.analytics.tasks.common.pathutil import (
+    EventLogSelectionDownstreamMixin, EventLogSelectionMixin
+)
+from edx.analytics.tasks.common.sqoop import SqoopImportMixin
 from edx.analytics.tasks.util import eventlog, opaque_key_util
 from edx.analytics.tasks.util.decorators import workflow_entry_point
-from edx.analytics.tasks.util.record import BooleanField, DateField, DateTimeField, IntegerField, Record, StringField, \
+from edx.analytics.tasks.util.record import BooleanField, DateField, IntegerField, Record, StringField, DateTimeField, \
     LongTextField
-from edx.analytics.tasks.util.url import ExternalURL, UncheckedExternalURL, get_target_from_url, url_path_join
-from edx.analytics.tasks.common.pathutil import (
-    EventLogSelectionDownstreamMixin, EventLogSelectionMixin, PathSelectionByDateIntervalTask
-)
+from edx.analytics.tasks.util.url import ExternalURL
 from edx.analytics.tasks.warehouse.load_internal_reporting_course_catalog import (
-    CoursePartitionTask, LoadInternalReportingCourseCatalogMixin, ProgramCoursePartitionTask
+    LoadInternalReportingCourseCatalogMixin
 )
 
 log = logging.getLogger(__name__)
@@ -675,27 +674,29 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         return raw_events
 
     def output(self):
+        raw_events = []
         for log_file in luigi.task.flatten(self.input()):
             with log_file.open('r') as temp_file:
                 with gzip.GzipFile(fileobj=temp_file) as input_file:
                     log.info('reading log file={}'.format(input_file))
-                    raw_events = self.get_raw_events_from_log_file(input_file)
-                    if not raw_events:
+                    events = self.get_raw_events_from_log_file(input_file)
+                    if not events:
                         continue
-                    columns = ['date_string', 'course_id+user_id', 'timestamp', 'event_type', 'mode']
+                    raw_events.extend(events)
+        columns = ['date_string', 'course_id+user_id', 'timestamp', 'event_type', 'mode']
 
-                    df = pd.DataFrame(data=raw_events, columns=columns)
+        df = pd.DataFrame(data=raw_events, columns=columns)
 
-                    increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name,
-                                                                               1)
+        increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name,
+                                                                   1)
 
-                    for (date_string, (course_id, user_id)), group in df.groupby(['date_string', 'course_id+user_id']):
-                        values = group[['timestamp', 'event_type', 'mode']].get_values()
+        for (date_string, (course_id, user_id)), group in df.groupby(['date_string', 'course_id+user_id']):
+            values = group[['timestamp', 'event_type', 'mode']].get_values()
 
-                        event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, values,
-                                                                       increment_counter)
-                        for day_enrolled_record in event_stream_processor.days_enrolled():
-                            yield day_enrolled_record
+            event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, values,
+                                                           increment_counter)
+            for day_enrolled_record in event_stream_processor.days_enrolled():
+                yield day_enrolled_record
 
     def _incr_counter(self, *args):
         """ Increments a Hadoop counter
@@ -1247,12 +1248,12 @@ class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, Over
             'overwrite_mysql': self.overwrite_mysql,
         }
 
-        course_summary_kwargs = dict({
-            'date': self.date,
-            'api_root_url': self.api_root_url,
-            'api_page_size': self.api_page_size,
-            'enable_course_catalog': self.enable_course_catalog,
-        }, **enrollment_kwargs)
+        # course_summary_kwargs = dict({
+        #     'date': self.date,
+        #     'api_root_url': self.api_root_url,
+        #     'api_page_size': self.api_page_size,
+        #     'enable_course_catalog': self.enable_course_catalog,
+        # }, **enrollment_kwargs)
 
         # course_enrollment_summary_args = dict({
         #     'source': self.source,
@@ -1263,19 +1264,9 @@ class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, Over
         # })
 
         yield [
-            # The S3 data generated by this job is used by the load_warehouse_bigquery and
-            # load_internal_reporting_user_course jobs.
-            # CourseEnrollmentSummaryPartitionTask(**course_enrollment_summary_args),
-            #
-            # EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
-            # EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
-            # EnrollmentByGenderMysqlTask(**enrollment_kwargs),
-            # EnrollmentDailyMysqlTask(**enrollment_kwargs),
-            CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
+            EnrollmentByBirthYearToMysqlTask(**enrollment_kwargs),
+            EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
+            EnrollmentByGenderMysqlTask(**enrollment_kwargs),
+            EnrollmentDailyMysqlTask(**enrollment_kwargs),
+            # CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
         ]
-        # if self.enable_course_catalog:
-        #     yield CourseProgramMetadataInsertToMysqlTask(**course_summary_kwargs)
-
-
-if __name__ == '__main__':
-    luigi.run(['HylImportEnrollmentsIntoMysql', '--overwrite-mysql', '--local-scheduler'])

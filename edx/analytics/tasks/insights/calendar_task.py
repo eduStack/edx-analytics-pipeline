@@ -1,11 +1,11 @@
 """A canonical calendar that can be joined with other tables to provide information about dates."""
 
-
 import logging
 from datetime import timedelta
 
 import luigi.configuration
 
+from edx.analytics.tasks.common.mysql_load import IncrementalMysqlInsertTask
 from edx.analytics.tasks.util import Week
 from edx.analytics.tasks.util.hive import HivePartition, HiveTableTask
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
@@ -23,6 +23,23 @@ class CalendarDownstreamMixin(OverwriteOutputMixin):
     interval = luigi.DateIntervalParameter(
         config_path={'section': 'calendar', 'name': 'interval'}
     )
+
+    def calendar_row_generator(self):
+        for date in self.interval:
+            iso_year, iso_weekofyear, iso_weekday = date.isocalendar()
+            week = Week(iso_year, iso_weekofyear)
+
+            column_values = (
+                date.isoformat(),
+                date.year,
+                date.month,
+                date.day,
+                '{0:04d}W{1:02d}'.format(iso_year, iso_weekofyear),
+                week.monday().isoformat(),
+                (week.sunday() + timedelta(1)).isoformat(),
+                iso_weekday
+            )
+            yield column_values
 
 
 class CalendarTask(CalendarDownstreamMixin, luigi.Task):
@@ -49,20 +66,7 @@ class CalendarTask(CalendarDownstreamMixin, luigi.Task):
         self.remove_output_on_overwrite()
 
         with self.output().open('w') as output_file:
-            for date in self.interval:
-                iso_year, iso_weekofyear, iso_weekday = date.isocalendar()
-                week = Week(iso_year, iso_weekofyear)
-
-                column_values = (
-                    date.isoformat(),
-                    date.year,
-                    date.month,
-                    date.day,
-                    '{0:04d}W{1:02d}'.format(iso_year, iso_weekofyear),
-                    week.monday().isoformat(),
-                    (week.sunday() + timedelta(1)).isoformat(),
-                    iso_weekday
-                )
+            for column_values in self.calendar_row_generator():
                 output_file.write('\t'.join([unicode(v).encode('utf8') for v in column_values]) + '\n')
 
 
@@ -96,3 +100,52 @@ class CalendarTableTask(CalendarDownstreamMixin, HiveTableTask):
             interval=self.interval,
             overwrite=self.overwrite,
         )
+
+
+class MysqlCalendarTableTask(CalendarDownstreamMixin, IncrementalMysqlInsertTask):
+    """Ensure a hive table exists for the calendar so that we can perform joins."""
+
+    @property
+    def table(self):
+        return 'calendar'
+
+    def rows(self):
+        for row in self.calendar_row_generator():
+            yield row
+
+    @property
+    def columns(self):
+        return [
+            ('date', 'VARCHAR(255) NOT NULL'),
+            ('year', 'INT(11) NOT NULL'),
+            ('month', 'INT(11) NOT NULL'),
+            ('day', 'INT(11) NOT NULL'),
+            ('iso_weekofyear', 'VARCHAR(255) NOT NULL'),
+            ('iso_week_start', 'VARCHAR(255) NOT NULL'),
+            ('iso_week_end', 'VARCHAR(255) NOT NULL'),
+            ('iso_weekday', 'INT(11) NOT NULL'),
+        ]
+
+    @property
+    def indexes(self):
+        return [
+            ('iso_week_start',),
+            ('iso_week_end',),
+            ('date',),
+        ]
+
+    @property
+    def insert_source_task(self):
+        return None
+
+    @property
+    def record_filter(self):
+        if self.overwrite:
+            return """`date` >= '{}' AND `date` <= '{}'""".format(self.interval.date_a.isoformat(),
+                                                                  self.interval.date_b.isoformat())
+        else:
+            return None
+
+    @property
+    def partition(self):
+        return HivePartition('date_interval', str(self.interval))

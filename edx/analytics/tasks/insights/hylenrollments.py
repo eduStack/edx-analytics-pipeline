@@ -523,27 +523,29 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
         return raw_events
 
     def output(self):
+        raw_events = []
         for log_file in luigi.task.flatten(self.input()):
             with log_file.open('r') as temp_file:
                 with gzip.GzipFile(fileobj=temp_file) as input_file:
                     log.info('reading log file={}'.format(input_file))
-                    raw_events = self.get_raw_events_from_log_file(input_file)
-                    if not raw_events:
+                    events = self.get_raw_events_from_log_file(input_file)
+                    if not events:
                         continue
-                    columns = ['date_string', 'course_id+user_id', 'timestamp', 'event_type', 'mode']
+                    raw_events.extend(events)
+        columns = ['date_string', 'course_id+user_id', 'timestamp', 'event_type', 'mode']
 
-                    df = pd.DataFrame(data=raw_events, columns=columns)
+        df = pd.DataFrame(data=raw_events, columns=columns)
 
-                    increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name,
-                                                                               1)
+        increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name,
+                                                                   1)
 
-                    for (date_string, (course_id, user_id)), group in df.groupby(['date_string', 'course_id+user_id']):
-                        values = group[['timestamp', 'event_type', 'mode']].get_values()
+        for (date_string, (course_id, user_id)), group in df.groupby(['date_string', 'course_id+user_id']):
+            values = group[['timestamp', 'event_type', 'mode']].get_values()
 
-                        event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, values,
-                                                                       increment_counter)
-                        for day_enrolled_record in event_stream_processor.days_enrolled():
-                            yield day_enrolled_record
+            event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, values,
+                                                           increment_counter)
+            for day_enrolled_record in event_stream_processor.days_enrolled():
+                yield day_enrolled_record
 
     def _incr_counter(self, *args):
         """ Increments a Hadoop counter

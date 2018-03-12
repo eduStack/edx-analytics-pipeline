@@ -139,7 +139,7 @@ class VideoSegmentDetailRecord(Record):
                                          'who was watching it.')
 
 
-class VideoTableDownstreamMixin(WarehouseMixin, EventLogSelectionMixin):
+class VideoTableDownstreamMixin(object):
     """All parameters needed to run the VideoUsageTask and its required tasks."""
     overwrite_n_days = luigi.IntParameter(
         config_path={'section': 'videos', 'name': 'overwrite_n_days'},
@@ -148,7 +148,7 @@ class VideoTableDownstreamMixin(WarehouseMixin, EventLogSelectionMixin):
     )
 
 
-class VideoUsageTask(VideoTableDownstreamMixin, luigi.Task):
+class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Task):
     completed = False
     # Cache for storing duration values fetched from Youtube.
     # Persist this across calls to the reducer.

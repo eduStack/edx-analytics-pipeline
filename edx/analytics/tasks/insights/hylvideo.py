@@ -139,7 +139,7 @@ class VideoSegmentDetailRecord(Record):
                                          'who was watching it.')
 
 
-class VideoTableDownstreamMixin(object):
+class VideoTableDownstreamMixin(EventLogSelectionDownstreamMixin):
     """All parameters needed to run the VideoUsageTask and its required tasks."""
     overwrite_n_days = luigi.IntParameter(
         config_path={'section': 'videos', 'name': 'overwrite_n_days'},

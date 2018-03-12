@@ -332,7 +332,7 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
             youtube_id = youtube_id.encode('utf8')
 
         # self.incr_counter(self.counter_category_name, 'Output Video Events from Mapper', 1)
-        yield (
+        return (
             username.encode('utf8'), course_id.encode('utf8'), encoded_module_id.encode('utf8'),
             timestamp, event_type, current_time, old_time, youtube_id, video_duration
         )
@@ -376,7 +376,7 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
                 ['username', 'course_id', 'encoded_module_id']):
             values = group[
                 ['timestamp', 'event_type', 'current_time', 'old_time', 'youtube_id', 'video_duration']].get_values()
-            sorted_events = sorted(values)
+            sorted_events = sorted(values, key=lambda x: x[0])
             key = (username, course_id, encoded_module_id)
             # When a user seeks forward while the video is playing, it is common to see an incorrect value for currentTime
             # in the play event emitted after the seek. The expected behavior here is play->seek->play with the second
@@ -567,6 +567,50 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
         if isinstance(requires, luigi.Task):
             yield requires
 
+    def get_video_duration(self, youtube_id):
+        """
+        For youtube videos, queries Google API for video duration information.
+
+        This returns an "unknown" duration flag if no API key has been defined, or if the query fails.
+        """
+        duration = VIDEO_UNKNOWN_DURATION
+        if self.api_key is None:
+            return duration
+
+        # Slow: self.incr_counter(self.counter_category_name, 'Subset Calls to Youtube API', 1)
+        video_file = None
+        try:
+            video_url = "https://www.googleapis.com/youtube/v3/videos?id={0}&part=contentDetails&key={1}".format(
+                youtube_id, self.api_key
+            )
+            video_file = urllib.urlopen(video_url)
+            content = json.load(video_file)
+            items = content.get('items', [])
+            if len(items) > 0:
+                duration_str = items[0].get(
+                    'contentDetails', {'duration': 'MISSING_CONTENTDETAILS'}
+                ).get('duration', 'MISSING_DURATION')
+                matcher = re.match(r'PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?', duration_str)
+                if not matcher:
+                    log.error('Unable to parse duration returned for video %s: %s', youtube_id, duration_str)
+                    # Slow: self.incr_counter(self.counter_category_name, 'Quality Unparseable Response From Youtube API', 1)
+                else:
+                    duration_secs = int(matcher.group('hours') or 0) * 3600
+                    duration_secs += int(matcher.group('minutes') or 0) * 60
+                    duration_secs += int(matcher.group('seconds') or 0)
+                    duration = duration_secs
+                    # Slow: self.incr_counter(self.counter_category_name, 'Subset Calls to Youtube API Succeeding', 1)
+            else:
+                log.error('Unable to find items in response to duration request for youtube video: %s', youtube_id)
+                # Slow: self.incr_counter(self.counter_category_name, 'Quality No Items In Response From Youtube API', 1)
+        except Exception:  # pylint: disable=broad-except
+            log.exception("Unrecognized response from Youtube API")
+            # Slow: self.incr_counter(self.counter_category_name, 'Quality Unrecognized Response From Youtube API', 1)
+        finally:
+            if video_file is not None:
+                video_file.close()
+
+        return duration
 
 class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTask):
 

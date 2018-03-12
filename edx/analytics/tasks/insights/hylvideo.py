@@ -614,6 +614,7 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
 
 
 class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTask):
+    dropoff_threshold = luigi.FloatParameter(config_path={'section': 'videos', 'name': 'dropoff_threshold'})
 
     def __init__(self, *args, **kwargs):
         super(VideoTimelineDataTask, self).__init__(*args, **kwargs)
@@ -723,39 +724,32 @@ class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTas
             users_at_end = len(usage_map.get(self.complete_end_segment(video_duration), {}).get('users', []))
             for segment in sorted(usage_map.keys()):
                 stats = usage_map[segment]
-                yield VideoSegmentDetailRecord(
-                    pipeline_video_id=pipeline_video_id,
-                    course_id=course_id,
-                    encoded_module_id=encoded_module_id,
-                    duration=int(video_duration),
-                    segment_length=VIDEO_VIEWING_SECONDS_PER_SEGMENT,
-                    users_at_start=users_at_start,
-                    users_at_end=users_at_end,
-                    segment=segment,
-                    num_users=len(stats.get('users', [])),
-                    num_views=stats.get('views', 0)
-                ).to_string_tuple()
+                # yield VideoSegmentDetailRecord(
+                #     pipeline_video_id=pipeline_video_id,
+                #     course_id=course_id,
+                #     encoded_module_id=encoded_module_id,
+                #     duration=int(video_duration),
+                #     segment_length=VIDEO_VIEWING_SECONDS_PER_SEGMENT,
+                #     users_at_start=users_at_start,
+                #     users_at_end=users_at_end,
+                #     segment=segment,
+                #     num_users=len(stats.get('users', [])),
+                #     num_views=stats.get('views', 0)
+                # ).to_string_tuple()
+                yield (
+                    pipeline_video_id,
+                    course_id,
+                    encoded_module_id,
+                    int(video_duration),
+                    VIDEO_VIEWING_SECONDS_PER_SEGMENT,
+                    users_at_start,
+                    users_at_end,
+                    segment,
+                    len(stats.get('users', [])),
+                    stats.get('views', 0)
+                )
                 if segment == final_segment:
                     break
-        # rows = [
-        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-        # ]
-        # for row in rows:
-        #     yield row
 
     @property
     def record_filter(self):

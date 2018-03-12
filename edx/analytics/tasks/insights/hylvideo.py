@@ -842,6 +842,83 @@ class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, MysqlInsertTask)
         )
 
 
+class InsertToMysqlVideoTask(VideoTableDownstreamMixin, MysqlInsertTask):
+    """Insert summary information into the video table in MySQL."""
+
+    overwrite = luigi.BooleanParameter(
+        default=True,
+        description='Overwrite the table when writing to it by default. Allow users to override this behavior if they '
+                    'want.',
+        significant=False
+    )
+    allow_empty_insert = luigi.BooleanParameter(
+        default=False,
+        description='Allow the video table to be empty (e.g. if no video activity has occurred)',
+        config_path={'section': 'videos', 'name': 'allow_empty_insert'},
+        significant=False,
+    )
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'video'
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def columns(self):  # pragma: no cover
+        return VideoSegmentSummaryRecord.get_sql_schema()
+
+    @property
+    def insert_query(self):  # pragma: no cover
+        """The fields used in the source table."""
+        return """
+                SELECT
+                    pipeline_video_id,
+                    course_id,
+                    encoded_module_id,
+                    duration,
+                    segment_length,
+                    users_at_start,
+                    users_at_end,
+                    sum(num_views) * segment_length
+                FROM video_usage
+                GROUP BY
+                    pipeline_video_id,
+                    course_id,
+                    encoded_module_id,
+                    duration,
+                    segment_length,
+                    users_at_start,
+                    users_at_end
+            """
+
+    def rows(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        for row in query_result:
+            yield row
+
+    @property
+    def indexes(self):  # pragma: no cover
+        return [
+            ('course_id', 'encoded_module_id'),
+        ]
+
+    def requires(self):
+        yield super(InsertToMysqlVideoTask, self).requires()['credentials']
+        yield (
+            VideoTimelineDataTask(
+                source=self.source,
+                interval=self.interval,
+                pattern=self.pattern,
+                overwrite_n_days=self.overwrite_n_days,
+            )
+        )
+
+
 @workflow_entry_point
 class HylInsertToMysqlAllVideoTask(VideoTableDownstreamMixin, luigi.WrapperTask):
     """Insert all video data into MySQL."""
@@ -855,5 +932,5 @@ class HylInsertToMysqlAllVideoTask(VideoTableDownstreamMixin, luigi.WrapperTask)
         }
         yield (
             InsertToMysqlVideoTimelineTask(**kwargs),
-            # InsertToMysqlVideoTask(**kwargs),
+            InsertToMysqlVideoTask(**kwargs),
         )

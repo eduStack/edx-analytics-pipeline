@@ -139,7 +139,7 @@ class VideoSegmentDetailRecord(Record):
                                          'who was watching it.')
 
 
-class VideoTableDownstreamMixin(WarehouseMixin, EventLogSelectionDownstreamMixin, MapReduceJobTaskMixin):
+class VideoTableDownstreamMixin(WarehouseMixin, EventLogSelectionMixin):
     """All parameters needed to run the VideoUsageTask and its required tasks."""
     overwrite_n_days = luigi.IntParameter(
         config_path={'section': 'videos', 'name': 'overwrite_n_days'},
@@ -551,10 +551,21 @@ class VideoUsageTask(VideoTableDownstreamMixin, luigi.Task):
             ct = 0
         self._counter_dict[key] = ct
 
+    def init_local(self):
+        self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
+        self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
+
     def run(self):
         log.info('test VideoUsageTask')
+        self.init_local()
+        super(VideoUsageTask, self).run()
         if self.completed is False:
             self.completed = True
+
+    def requires(self):
+        requires = super(VideoUsageTask, self).requires()
+        if isinstance(requires, luigi.Task):
+            yield requires
 
 
 class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTask):

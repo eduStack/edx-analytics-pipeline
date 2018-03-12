@@ -612,6 +612,7 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
 
         return duration
 
+
 class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTask):
 
     def __init__(self, *args, **kwargs):
@@ -635,6 +636,36 @@ class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTas
     def columns(self):  # pragma: no cover
         return VideoSegmentDetailRecord.get_sql_schema()
 
+    def snap_to_last_segment_boundary(self, second):
+        """Maps a time_offset to a segment index."""
+        return (int(second) / VIDEO_VIEWING_SECONDS_PER_SEGMENT)
+
+    def get_final_segment(self, usage_map):
+        """
+        Identifies the final segment by looking for a sharp drop in number of users per segment.
+        Needed as some events appear after the actual end of videos.
+        """
+        final_segment = last_segment = max(usage_map.keys())
+        last_segment_num_users = len(usage_map[last_segment]['users'])
+        for segment in sorted(usage_map.keys(), reverse=True)[1:]:
+            stats = usage_map[segment]
+            current_segment_num_users = len(stats.get('users', []))
+            if last_segment_num_users <= current_segment_num_users * self.dropoff_threshold:
+                final_segment = segment
+                break
+            last_segment_num_users = current_segment_num_users
+            last_segment = segment
+        return final_segment
+
+    def complete_end_segment(self, duration):
+        """
+        Calculates a complete end segment(if the user has watched till this segment,
+        we consider the user to have watched the complete video) by cutting off the minimum of
+        30 seconds and 5% of duration. Needed to cut off video credits etc.
+        """
+        complete_end_time = max(duration - 30, duration * 0.95)
+        return self.snap_to_last_segment_boundary(complete_end_time)
+
     def rows(self):
         require = self.requires_local()
         if not require:
@@ -644,25 +675,87 @@ class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTas
             events.append(raw_event)
 
         log.info('events = {}'.format(events))
-        rows = [
-            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
-             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
-             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
-        ]
-        for row in rows:
-            yield row
+        columns = ['username', 'course_id', 'encoded_module_id', 'video_duration', 'start_timestamp', 'start_offset',
+                   'end_time', 'event_type']
+
+        df = pd.DataFrame(data=events, columns=columns)
+
+        for (course_id, encoded_module_id), group in df.groupby(
+                ['course_id', 'encoded_module_id']):
+            values = group[
+                ['username', 'start_offset', 'end_time', 'video_duration']].get_values()
+            # key = (course_id, encoded_module_id)
+            pipeline_video_id = '{0}|{1}'.format(course_id, encoded_module_id)
+            usage_map = {}
+
+            video_duration = 0
+            for viewing in values:
+                username, start_offset, end_offset, duration = viewing
+
+                # Find the maximum actual video duration, but indicate that
+                # it's unknown if any viewing was of a video with unknown duration.
+                duration = float(duration)
+                if video_duration == VIDEO_UNKNOWN_DURATION:
+                    pass
+                elif duration == VIDEO_UNKNOWN_DURATION:
+                    video_duration = VIDEO_UNKNOWN_DURATION
+                elif duration > video_duration:
+                    video_duration = duration
+
+                first_segment = self.snap_to_last_segment_boundary(float(start_offset))
+                last_segment = self.snap_to_last_segment_boundary(float(end_offset))
+                for segment in xrange(first_segment, last_segment + 1):
+                    stats = usage_map.setdefault(segment, {})
+                    users = stats.setdefault('users', set())
+                    users.add(username)
+                    stats['views'] = stats.get('views', 0) + 1
+
+            # If we don't know the duration of the video, just use the final segment that was
+            # actually viewed to determine users_at_end.
+            if video_duration == VIDEO_UNKNOWN_DURATION:
+                final_segment = self.get_final_segment(usage_map)
+                video_duration = ((final_segment + 1) * VIDEO_VIEWING_SECONDS_PER_SEGMENT) - 1
+            else:
+                final_segment = self.snap_to_last_segment_boundary(float(video_duration))
+
+            # Output stats.
+            users_at_start = len(usage_map.get(0, {}).get('users', []))
+            users_at_end = len(usage_map.get(self.complete_end_segment(video_duration), {}).get('users', []))
+            for segment in sorted(usage_map.keys()):
+                stats = usage_map[segment]
+                yield VideoSegmentDetailRecord(
+                    pipeline_video_id=pipeline_video_id,
+                    course_id=course_id,
+                    encoded_module_id=encoded_module_id,
+                    duration=int(video_duration),
+                    segment_length=VIDEO_VIEWING_SECONDS_PER_SEGMENT,
+                    users_at_start=users_at_start,
+                    users_at_end=users_at_end,
+                    segment=segment,
+                    num_users=len(stats.get('users', [])),
+                    num_views=stats.get('views', 0)
+                ).to_string_tuple()
+                if segment == final_segment:
+                    break
+        # rows = [
+        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+        #     ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+        #      'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+        #      '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+        # ]
+        # for row in rows:
+        #     yield row
 
     @property
     def record_filter(self):

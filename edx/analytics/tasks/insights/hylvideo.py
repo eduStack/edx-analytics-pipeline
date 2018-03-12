@@ -146,7 +146,89 @@ class VideoTableDownstreamMixin(WarehouseMixin, EventLogSelectionDownstreamMixin
         default=3,
     )
 
-class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTask):
+
+class VideoUsageTask(VideoTableDownstreamMixin, luigi.Task):
+    completed = False
+
+    def complete(self):
+        return self.completed
+
+    def output(self):
+        rows = [
+            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+            ('course-v1:BISTU_JSZX+0BS11002+2016_2017_T2|8f2f3f3078954b009d733cb042281e9e',
+             'course-v1:BISTU_JSZX+0BS11002+2016_2017_T2',
+             '8f2f3f3078954b009d733cb042281e9e', 289, 5, 14, 14, 0, 14, 24),
+        ]
+        for row in rows:
+            yield row
+
+    def run(self):
+        log.info('test VideoUsageTask')
+        if self.completed is False:
+            self.completed = True
+
+
+class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTask):
+
+    def __init__(self, *args, **kwargs):
+        super(VideoTimelineDataTask, self).__init__(*args, **kwargs)
+
+        overwrite_from_date = self.interval.date_b - datetime.timedelta(days=self.overwrite_n_days)
+        self.overwrite_interval = DateIntervalParameter().parse('{}-{}'.format(
+            overwrite_from_date,
+            self.interval.date_b
+        ))
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'video_usage'
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def columns(self):  # pragma: no cover
+        return VideoSegmentDetailRecord.get_sql_schema()
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
+
+    @property
+    def record_filter(self):
+        return None
+
+    def requires_local(self):
+        return VideoUsageTask(
+            interval=self.overwrite_interval,
+            source=self.source,
+            pattern=self.pattern
+        )
+
+    def requires(self):
+        yield super(VideoTimelineDataTask, self).requires()['credentials']
+
+        requires_local = self.requires_local()
+        if isinstance(requires_local, luigi.Task):
+            yield requires_local
+
+
+class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, MysqlInsertTask):
     """Insert information about video timelines from a Hive table into MySQL."""
 
     overwrite = luigi.BooleanParameter(
@@ -176,21 +258,28 @@ class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, IncrementalMysql
 
     @property
     def insert_query(self):
-        return ''
+        return """
+            SELECT
+                pipeline_video_id,
+                segment,
+                num_users,
+                num_views
+            FROM video_usage
+        """
 
     def rows(self):
-        # query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-        #                                        query=self.insert_query)
-        # log.info('query_sql = [{}]'.format(self.insert_query))
-        # for row in query_result:
-        #     yield row
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        for row in query_result:
+            yield row
         #
         # pipeline_video_id = StringField(length=255, nullable=False)
         # segment = IntegerField()
         # num_users = IntegerField()
         # num_views = IntegerField()
 
-        yield ('test-pipeline_video_id', 1, 2, 3)
+        # yield ('test-pipeline_video_id', 1, 2, 3)
 
     @property
     def indexes(self):  # pragma: no cover
@@ -198,25 +287,18 @@ class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, IncrementalMysql
             ('pipeline_video_id',),
         ]
 
-    @property
-    def record_filter(self):
-        # if self.overwrite:
-        #     return """`date` >= '{}' AND `date` <= '{}'""".format(self.overwrite_from_date.isoformat(),
-        #                                                           self.interval.date_b.isoformat())
-        # else:
-        return None
-
     def requires(self):
         yield super(InsertToMysqlVideoTimelineTask, self).requires()['credentials']
         # the process that generates the source table used by this query
-        # yield (
-        #     VideoTimelineDataTask(
-        #         source=self.source,
-        #         interval=self.interval,
-        #         pattern=self.pattern,
-        #         overwrite_n_days=self.overwrite_n_days,
-        #     )
-        # )
+        yield (
+            VideoTimelineDataTask(
+                source=self.source,
+                interval=self.interval,
+                pattern=self.pattern,
+                overwrite_n_days=self.overwrite_n_days,
+            )
+        )
+
 
 @workflow_entry_point
 class HylInsertToMysqlAllVideoTask(VideoTableDownstreamMixin, luigi.WrapperTask):

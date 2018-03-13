@@ -1260,7 +1260,6 @@ class ImportPersistentCourseGradeTask(MysqlInsertTask):
             ('user_id',),
             # Note that the order here is extremely important. The API query pattern needs to filter first by course and
             # then by date.
-            ('user_id', 'gender'),
         ]
 
     def requires_local(self):
@@ -1329,9 +1328,7 @@ class CourseGradeByModeDataTask(OverwriteMysqlDownstreamMixin,
         yield super(CourseGradeByModeDataTask, self).requires()['credentials']
 
         # # We need the `grades_persistentcoursegrade` Hive table to exist before we can persist and load data.
-        yield ImportPersistentCourseGradeTask(
-            import_date=self.date
-        )
+        yield ImportPersistentCourseGradeTask()
 
         # this will give us the `course_enrollment` Hive table for the query above.
         yield CourseEnrollmentTask(
@@ -1340,11 +1337,10 @@ class CourseGradeByModeDataTask(OverwriteMysqlDownstreamMixin,
             interval=self.interval,
             pattern=self.pattern,
             overwrite_n_days=self.overwrite_n_days,
-            overwrite=self.overwrite
         )
 
 
-class EnrollmentByModeTask(CourseEnrollmentDownstreamMixin, MysqlInsertTask):
+class EnrollmentByModeTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, MysqlInsertTask):
     """
     Breakdown of enrollments by mode
 
@@ -1408,7 +1404,8 @@ class EnrollmentByModeTask(CourseEnrollmentDownstreamMixin, MysqlInsertTask):
         yield super(EnrollmentByModeTask, self).requires()['credentials']
 
 
-class CourseTableTask(OverwriteMysqlDownstreamMixin, MysqlInsertTask):
+class CourseTableTask(LoadInternalReportingCourseCatalogMixin,
+                      OverwriteMysqlDownstreamMixin, MysqlInsertTask):
     """Hive table for course catalog."""
 
     @property
@@ -1424,7 +1421,7 @@ class CourseTableTask(OverwriteMysqlDownstreamMixin, MysqlInsertTask):
 
     @property
     def columns(self):
-        return CourseRecord.get_hive_schema()
+        return CourseRecord.get_sql_schema()
 
 
 class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, CourseSummaryEnrollmentDownstreamMixin,
@@ -1440,6 +1437,10 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
     @property
     def table(self):  # pragma: no cover
         return 'course_meta_summary_enrollment'
+
+    @property
+    def insert_source_task(self):
+        return None
 
     @property
     def insert_query(self):

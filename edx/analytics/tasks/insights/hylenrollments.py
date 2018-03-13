@@ -1201,7 +1201,8 @@ class PersistentCourseGradeDataSelectionTask(SqoopImportMixin, luigi.Task):
                         grading_policy_hash,
                         percent_grade,
                         letter_grade,
-                        passed_timestamp
+                        passed_timestamp,
+                        modified
                     FROM grades_persistentcoursegrade
                 """
         return query
@@ -1252,6 +1253,7 @@ class ImportPersistentCourseGradeTask(MysqlInsertTask):
             ('percent_grade', 'DECIMAL(10,2)'),
             ('letter_grade', 'VARCHAR(255)'),
             ('passed_timestamp', 'TIMESTAMP'),
+            ('modified', 'TIMESTAMP'),
         ]
 
     @property
@@ -1302,7 +1304,7 @@ class CourseGradeByModeDataTask(OverwriteMysqlDownstreamMixin,
                             INNER JOIN grades_persistentcoursegrade grades
                                     ON grades.course_id = ce.course_id
                                    AND grades.user_id = ce.user_id
-                     WHERE  ce.`date` <= to_date(grades.modified)
+                     WHERE  ce.`date` <= date(grades.modified)
                      GROUP BY ce.course_id,
                               ce.user_id
                  ) closest_enrollment

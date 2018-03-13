@@ -171,7 +171,7 @@ class DaysEnrolledForEvents(object):
         self.interval = interval
         self.increment_counter = increment_counter
 
-        self.sorted_events = sorted(events)
+        self.sorted_events = sorted(events, key=lambda x: x[0])
         # After sorting, we can discard time information since we only care about date transitions.
         self.sorted_events = [
             EnrollmentEvent(timestamp, event_type, mode) for timestamp, event_type, mode in self.sorted_events

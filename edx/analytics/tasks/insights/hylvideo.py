@@ -552,6 +552,9 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
         self._counter_dict[key] = ct
 
     def init_local(self):
+        # Providing an api_key is optional.
+        self.api_key = configuration.get_config().get('google', 'api_key', None)
+        # Reset this (mostly for the sake of tests).
         self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
         self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
 

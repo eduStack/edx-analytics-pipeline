@@ -18,7 +18,7 @@ from edx.analytics.tasks.util.record import BooleanField, DateField, IntegerFiel
     LongTextField
 from edx.analytics.tasks.util.url import ExternalURL
 from edx.analytics.tasks.warehouse.load_internal_reporting_course_catalog import (
-    LoadInternalReportingCourseCatalogMixin
+    LoadInternalReportingCourseCatalogMixin, CourseRecord
 )
 
 log = logging.getLogger(__name__)
@@ -492,6 +492,23 @@ class CourseSummaryEnrollmentRecord(Record):
     count_change_7_days = IntegerField(nullable=True,
                                        description='Difference in enrollment counts over the past 7 days')
     cumulative_count = IntegerField(nullable=True, description='The cumulative total of all users ever enrolled')
+    passing_users = IntegerField(nullable=True, description='The count of currently passing learners')
+
+
+class EnrollmentByModeRecord(Record):
+    """Summarizes a course's enrollment by mode and date."""
+    date = DateField(length=255, nullable=False, description='Enrollment date.')
+    course_id = StringField(length=255, nullable=False, description='The course the learners are enrolled in.')
+    mode = StringField(length=255, nullable=False, description='The mode of the learner.')
+    count = IntegerField(description='The number of learners with this mode in the course on this date.')
+    cumulative_count = IntegerField(description='The count of learners with this mode that ever enrolled in this course'
+                                                ' on or before this date.')
+
+
+class CourseGradeByModeRecord(Record):
+    """Represents aggregated course grades by enrollment mode."""
+    course_id = StringField(nullable=False, length=255, description='The course the learners are enrolled in.')
+    mode = StringField(nullable=False, length=255, description='The mode of the learners enrolled in this course.')
     passing_users = IntegerField(nullable=True, description='The count of currently passing learners')
 
 
@@ -1165,7 +1182,253 @@ class EnrollmentByEducationLevelMysqlTask(
         )
 
 
-class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
+class PersistentCourseGradeDataSelectionTask(SqoopImportMixin, luigi.Task):
+    completed = False
+
+    def complete(self):
+        return self.completed
+        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        query = """
+                    SELECT 
+                        user_id,
+                        course_id,
+                        course_edited_timestamp,
+                        course_version,
+                        grading_policy_hash,
+                        percent_grade,
+                        letter_grade,
+                        passed_timestamp
+                    FROM grades_persistentcoursegrade
+                """
+        return query
+
+    def output(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        for row in query_result:
+            yield row
+
+    def run(self):
+        log.info('PersistentCourseGradeDataSelectionTask running')
+        if not self.completed:
+            self.completed = True
+
+    def requires(self):
+        yield ExternalURL(url=self.credentials)
+
+
+class ImportPersistentCourseGradeTask(MysqlInsertTask):
+
+    def __init__(self, *args, **kwargs):
+        super(ImportPersistentCourseGradeTask, self).__init__(*args, **kwargs)
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'grades_persistentcoursegrade'
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
+
+    @property
+    def columns(self):
+        return [
+            ('user_id', 'INT'),
+            ('course_id', 'VARCHAR(255)'),
+            ('course_edited_timestamp', 'TIMESTAMP'),
+            ('course_version', 'VARCHAR(255)'),
+            ('grading_policy_hash', 'VARCHAR(255)'),
+            ('percent_grade', 'DECIMAL(10,2)'),
+            ('letter_grade', 'VARCHAR(255)'),
+            ('passed_timestamp', 'TIMESTAMP'),
+        ]
+
+    @property
+    def indexes(self):
+        return [
+            ('user_id',),
+            # Note that the order here is extremely important. The API query pattern needs to filter first by course and
+            # then by date.
+            ('user_id', 'gender'),
+        ]
+
+    def requires_local(self):
+        return PersistentCourseGradeDataSelectionTask()
+
+    def requires(self):
+        yield super(ImportPersistentCourseGradeTask, self).requires()['credentials']
+
+        requires_local = self.requires_local()
+        if isinstance(requires_local, luigi.Task):
+            yield requires_local
+
+
+class CourseGradeByModeDataTask(OverwriteMysqlDownstreamMixin,
+                                CourseSummaryEnrollmentDownstreamMixin, MysqlInsertTask):  # pragma: no cover
+    """Aggregates data from `grades_persistentcoursegrade` into `course_grade_by_mode` Hive table."""
+
+    @property
+    def table(self):
+        return 'course_grade_by_mode'
+
+    @property
+    def insert_source_task(self):
+        return None
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        return """
+        SELECT   all_enrollments.course_id AS course_id,
+                 all_enrollments.mode AS mode,
+                 SUM(CASE WHEN closest_enrollment.passed_timestamp IS NOT NULL THEN 1 ELSE 0 END) AS passing_users
+        FROM     course_enrollment all_enrollments
+                 LEFT OUTER JOIN (
+                     SELECT ce.course_id,
+                            ce.user_id,
+                            MAX(ce.`date`) AS enrollment_date,
+                            MAX(grades.passed_timestamp) AS passed_timestamp
+                     FROM   course_enrollment ce
+                            INNER JOIN grades_persistentcoursegrade grades
+                                    ON grades.course_id = ce.course_id
+                                   AND grades.user_id = ce.user_id
+                     WHERE  ce.`date` <= to_date(grades.modified)
+                     GROUP BY ce.course_id,
+                              ce.user_id
+                 ) closest_enrollment
+                         ON all_enrollments.course_id = closest_enrollment.course_id
+                        AND all_enrollments.user_id = closest_enrollment.user_id
+                        AND all_enrollments.`date` = closest_enrollment.enrollment_date
+        GROUP BY all_enrollments.course_id,
+                 all_enrollments.mode
+        """
+
+    def rows(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        for row in query_result:
+            yield row
+
+    @property
+    def columns(self):
+        return CourseGradeByModeRecord.get_sql_schema()
+
+    def requires(self):
+        yield super(CourseGradeByModeDataTask, self).requires()['credentials']
+
+        # # We need the `grades_persistentcoursegrade` Hive table to exist before we can persist and load data.
+        yield ImportPersistentCourseGradeTask(
+            import_date=self.date
+        )
+
+        # this will give us the `course_enrollment` Hive table for the query above.
+        yield CourseEnrollmentTask(
+            overwrite_mysql=self.overwrite_mysql,
+            source=self.source,
+            interval=self.interval,
+            pattern=self.pattern,
+            overwrite_n_days=self.overwrite_n_days,
+            overwrite=self.overwrite
+        )
+
+
+class EnrollmentByModeTask(CourseEnrollmentDownstreamMixin, MysqlInsertTask):
+    """
+    Breakdown of enrollments by mode
+
+    During operations: The object at insert_source_task is opened and each row is treated as a row to be inserted.
+    At the end of this task data has been written to MySQL.  Overwrite functionality is complex and configured through
+    the OverwriteHiveAndMysqlDownstreamMixin, so we default the standard overwrite parameter to None.
+    """
+    overwrite = None
+
+    def __init__(self, *args, **kwargs):
+        super(EnrollmentByModeTask, self).__init__(*args, **kwargs)
+        self.overwrite = self.overwrite_mysql
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'course_enrollment_mode_daily'
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        query = """
+                SELECT
+                    ce.`date`,
+                    ce.course_id,
+                    ce.mode,
+                    SUM(ce.at_end),
+                    COUNT(ce.user_id)
+                FROM course_enrollment ce
+                GROUP BY
+                    ce.`date`,
+                    ce.course_id,
+                    ce.mode
+            """.format(date=self.query_date)
+        return query
+
+    def rows(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        for row in query_result:
+            yield row
+
+    @property
+    def columns(self):
+        return EnrollmentByModeRecord.get_sql_schema()
+
+    @property
+    def indexes(self):
+        return [
+            ('course_id',),
+            # Note that the order here is extremely important. The API query pattern needs to filter first by course and
+            # then by date.
+            ('course_id', 'date'),
+        ]
+
+    def requires(self):
+        yield super(EnrollmentByModeTask, self).requires()['credentials']
+
+
+class CourseTableTask(OverwriteMysqlDownstreamMixin, MysqlInsertTask):
+    """Hive table for course catalog."""
+
+    @property
+    def insert_source_task(self):
+        return None
+
+    def rows(self):
+        return []
+
+    @property
+    def table(self):
+        return 'course_catalog'
+
+    @property
+    def columns(self):
+        return CourseRecord.get_hive_schema()
+
+
+class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, CourseSummaryEnrollmentDownstreamMixin,
+                                           CourseEnrollmentDownstreamMixin,
                                            IncrementalMysqlInsertTask):
     """Hive partition that stores the set of users enrolled in each course over time."""
     overwrite = None
@@ -1215,9 +1478,9 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
         return query
 
     def rows(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
         query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
                                                query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
         for row in query_result:
             yield row
 
@@ -1230,8 +1493,40 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
         return [('course_id',)]
 
     def requires(self):
-        for req in super(CourseMetaSummaryEnrollmentIntoMysql, self).requires():
-            yield req
+        yield super(CourseMetaSummaryEnrollmentIntoMysql, self).requires()['credentials']
+        catalog_tasks = [
+            # Currently overwriting is not set up correctly on CoursePartition so let's leave it as default (false).
+            CourseTableTask(
+                date=self.date,
+                allow_empty_insert=self.allow_empty_insert,
+                api_root_url=self.api_root_url,
+                api_page_size=self.api_page_size,
+            ),
+        ]
+
+        yield catalog_tasks
+
+        common_kwargs = {
+            'interval': self.interval,
+            'overwrite_n_days': self.overwrite_n_days,
+        }
+
+        enrollment_by_mode_task = EnrollmentByModeTask(
+            source=self.source,
+            pattern=self.pattern,
+            overwrite_mysql=self.overwrite_mysql,
+            **common_kwargs
+        )
+
+        yield enrollment_by_mode_task
+
+        course_by_mode_data_task = CourseGradeByModeDataTask(
+            date=self.date,
+            overwrite_mysql=self.overwrite_mysql,
+            **common_kwargs
+        )
+
+        yield course_by_mode_data_task
 
 
 @workflow_entry_point
@@ -1248,12 +1543,12 @@ class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, Over
             'overwrite_mysql': self.overwrite_mysql,
         }
 
-        # course_summary_kwargs = dict({
-        #     'date': self.date,
-        #     'api_root_url': self.api_root_url,
-        #     'api_page_size': self.api_page_size,
-        #     'enable_course_catalog': self.enable_course_catalog,
-        # }, **enrollment_kwargs)
+        course_summary_kwargs = dict({
+            'date': self.date,
+            'api_root_url': self.api_root_url,
+            'api_page_size': self.api_page_size,
+            'enable_course_catalog': self.enable_course_catalog,
+        }, **enrollment_kwargs)
 
         # course_enrollment_summary_args = dict({
         #     'source': self.source,
@@ -1268,5 +1563,5 @@ class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, Over
             EnrollmentByEducationLevelMysqlTask(**enrollment_kwargs),
             EnrollmentByGenderMysqlTask(**enrollment_kwargs),
             EnrollmentDailyMysqlTask(**enrollment_kwargs),
-            # CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
+            CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
         ]

@@ -95,7 +95,7 @@ class LastCountryOfUserRecord(Record):
     username = StringField(length=255, description="Username of user with country information.")
 
 
-class LastCountryOfUser(LastCountryOfUserDownstreamMixin, EventLogSelectionMixin, GeolocationMixin, luigi.Task):
+class LastCountryOfUserDataTask(LastCountryOfUserDownstreamMixin, EventLogSelectionMixin, GeolocationMixin, luigi.Task):
     """
     Identifies the country of the last IP address associated with each user.
 
@@ -139,7 +139,7 @@ class LastCountryOfUser(LastCountryOfUserDownstreamMixin, EventLogSelectionMixin
     def run(self):
         self.init_local()
         log.info('LastCountryOfUser running')
-        super(LastCountryOfUser, self).run()
+        super(LastCountryOfUserDataTask, self).run()
         if not self.completed:
             self.completed = True
         self.final_reducer()
@@ -148,10 +148,50 @@ class LastCountryOfUser(LastCountryOfUserDownstreamMixin, EventLogSelectionMixin
         return ExternalURL(self.geolocation_data)
 
     def requires(self):
-        requires = super(LastCountryOfUser, self).requires()
+        requires = super(LastCountryOfUserDataTask, self).requires()
         if isinstance(requires, luigi.Task):
             yield requires
         yield self.geolocation_data_target()
+
+
+class LastCountryOfUser(LastCountryOfUserDownstreamMixin, MysqlInsertTask):
+    """
+    Copy the last_country_of_user table from Map-Reduce into MySQL.
+    """
+
+    @property
+    def table(self):
+        return "last_country_of_user"
+
+    @property
+    def columns(self):
+        return LastCountryOfUserRecord.get_sql_schema()
+
+    @property
+    def insert_source_task(self):
+        return None
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
+
+    def requires_local(self):
+        return LastCountryOfUserDataTask(
+            source=self.source,
+            pattern=self.pattern,
+            interval=self.interval,
+            interval_start=self.interval_start,
+            interval_end=self.interval_end,
+            overwrite_n_days=self.overwrite_n_days,
+            geolocation_data=self.geolocation_data,
+            overwrite=self.overwrite,
+        )
+
+    def requires(self):
+        yield super(LastCountryOfUser, self).requires()['credentials']
+        yield self.requires_local()
 
 
 class InsertToMysqlLastCountryOfUserTask(LastCountryOfUserDownstreamMixin, MysqlInsertTask):

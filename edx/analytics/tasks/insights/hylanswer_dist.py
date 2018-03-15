@@ -362,7 +362,7 @@ class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
                         continue
                     raw_events.extend(events)
         columns = ['course_id', 'problem_id', 'username', 'timestamp', 'problem_check_info']
-        log.info('raw_events = {}'.format(raw_events))
+        # log.info('raw_events = {}'.format(raw_events))
         df = pd.DataFrame(data=raw_events, columns=columns)
         result = []
         for (course_id, problem_id, username), group in df.groupby(['course_id', 'problem_id', 'username']):
@@ -380,7 +380,7 @@ class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
 
             for answer in self._generate_answers(most_recent_event, 'last'):
                 result.append(answer)
-        log.info('result = {}'.format(result))
+        # log.info('result = {}'.format(result))
         return result
 
     def run(self):
@@ -388,7 +388,7 @@ class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
             self.completed = True
 
     def requires(self):
-        return PathSetTask(self.src, self.include, self.manifest)
+        yield PathSetTask(self.src, self.include, self.manifest)
 
 
 class AnswerDistributionPerCourse(AnswerDistributionDownstreamMixin, luigi.Task):
@@ -421,7 +421,7 @@ class AnswerDistributionPerCourse(AnswerDistributionDownstreamMixin, luigi.Task)
         """
         course_id, answer_id = key
 
-        values = sorted(values)
+        values = sorted(values, key=lambda x: x[0])
         if not values:
             return
 
@@ -652,7 +652,6 @@ class AnswerDistributionPerCourse(AnswerDistributionDownstreamMixin, luigi.Task)
 
     def requires_local(self):
         return ProblemCheckEvent(
-            input_format=self.base_input_format,
             name=self.name,
             src=self.src,
             dest=self.dest,
@@ -669,7 +668,6 @@ class AnswerDistributionPerCourse(AnswerDistributionDownstreamMixin, luigi.Task)
             df = pd.DataFrame(data=events, columns=columns)
             for (course_id, answer_id), group in df.groupby(['course_id', 'answer_id']):
                 values = group[['timestamp', 'answer_data']].get_values()
-                values = sorted(values, key=lambda x: x[0])
                 key = (course_id, answer_id)
                 yield self.reducer(key, values)
 
@@ -712,24 +710,25 @@ class AnswerDistributionToMySQLTaskWorkflow(AnswerDistributionDownstreamMixin, M
         """
         require = self.requires_local()
         if require:
-            for row in require.output():
-                course_id, content = row
-                row_dict = json.loads(content)
-                output_list = [
-                    course_id,
-                    row_dict['ModuleID'],
-                    row_dict['PartID'],
-                    row_dict['Correct Answer'],
-                    row_dict['First Response Count'],
-                    row_dict['Last Response Count'],
-                    row_dict['ValueID'] if row_dict['ValueID'] else None,
-                    row_dict['AnswerValue'] if row_dict['AnswerValue'] else None,
-                    try_str_to_float(row_dict['AnswerValue']),
-                    row_dict['Variant'] if row_dict['Variant'] else None,
-                    row_dict['Problem Display Name'] if row_dict['Problem Display Name'] else None,
-                    row_dict['Question'] if row_dict['Question'] else None,
-                ]
-                yield output_list
+            for rows in require.output():
+                for row in rows:
+                    course_id, content = row
+                    row_dict = json.loads(content)
+                    output_list = [
+                        course_id,
+                        row_dict['ModuleID'],
+                        row_dict['PartID'],
+                        row_dict['Correct Answer'],
+                        row_dict['First Response Count'],
+                        row_dict['Last Response Count'],
+                        row_dict['ValueID'] if row_dict['ValueID'] else None,
+                        row_dict['AnswerValue'] if row_dict['AnswerValue'] else None,
+                        try_str_to_float(row_dict['AnswerValue']),
+                        row_dict['Variant'] if row_dict['Variant'] else None,
+                        row_dict['Problem Display Name'] if row_dict['Problem Display Name'] else None,
+                        row_dict['Question'] if row_dict['Question'] else None,
+                    ]
+                    yield output_list
 
     @property
     def table(self):

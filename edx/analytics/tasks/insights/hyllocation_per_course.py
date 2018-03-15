@@ -274,7 +274,7 @@ class ImportAuthUserTask(MysqlInsertTask):
             ('is_active', 'TINYINT(1)'),
             ('is_superuser', 'TINYINT(1)'),
             ('is_staff', 'TINYINT(1)'),
-            ('email', 'VARCHAR(255))'),
+            ('email', 'VARCHAR(255)'),
         ]
 
     @property

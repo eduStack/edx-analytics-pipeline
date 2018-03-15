@@ -271,9 +271,9 @@ class ImportAuthUserTask(MysqlInsertTask):
             ('username', 'VARCHAR(255)'),
             ('last_login', 'TIMESTAMP'),
             ('date_joined', 'TIMESTAMP'),
-            ('is_active', 'TYNYINT(1)'),
-            ('is_superuser', 'TYNYINT(1)'),
-            ('is_staff', 'TYNYINT(1)'),
+            ('is_active', 'TINYINT(1)'),
+            ('is_superuser', 'TINYINT(1)'),
+            ('is_staff', 'TINYINT(1)'),
             ('email', 'VARCHAR(255))'),
         ]
 
@@ -354,7 +354,7 @@ class ImportStudentCourseEnrollmentTask(MysqlInsertTask):
         return [
             ('user_id', 'INT'),
             ('course_id', 'VARCHAR(255)'),
-            ('is_active', 'TYNYINT(1)'),
+            ('is_active', 'TINYINT(1)'),
             ('mode', 'VARCHAR(255)'),
         ]
 

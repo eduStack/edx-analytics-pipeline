@@ -348,6 +348,7 @@ class StudentCourseEnrollmentSelectionTask(SqoopImportMixin, luigi.Task):
                 SELECT 
                     user_id,
                     course_id,
+                    date(created) dt,
                     is_active,
                     `mode`
                 FROM student_courseenrollment
@@ -394,6 +395,7 @@ class ImportStudentCourseEnrollmentTask(MysqlInsertTask):
         return [
             ('user_id', 'INT'),
             ('course_id', 'VARCHAR(255)'),
+            ('dt', 'TIMESTAMP'),
             ('is_active', 'TINYINT(1)'),
             ('mode', 'VARCHAR(255)'),
         ]

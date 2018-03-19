@@ -9,7 +9,7 @@ import luigi
 import luigi.date_interval
 
 import edx.analytics.tasks.util.eventlog as eventlog
-from edx.analytics.tasks.common.mysql_load import get_mysql_query_results, IncrementalMysqlInsertTask
+from edx.analytics.tasks.common.mysql_load import get_mysql_query_results, IncrementalMysqlTableInsertTask
 from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
 from edx.analytics.tasks.insights.calendar_task import MysqlCalendarTableTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
@@ -166,14 +166,10 @@ class UserActivityDownstreamMixin(EventLogSelectionDownstreamMixin):
     )
 
 
-class UserActivityTableTask(UserActivityDownstreamMixin, IncrementalMysqlInsertTask):
+class UserActivityTableTask(UserActivityDownstreamMixin, IncrementalMysqlTableInsertTask):
     """
     The hive table for storing user activity data. This task also adds partition metadata info to the Hive metastore.
     """
-
-    @property
-    def insert_source_task(self):
-        return None
 
     def rows(self):
         require = self.requires_local()
@@ -221,7 +217,7 @@ class UserActivityTableTask(UserActivityDownstreamMixin, IncrementalMysqlInsertT
 
 
 @workflow_entry_point
-class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownstreamMixin, IncrementalMysqlInsertTask):
+class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownstreamMixin, IncrementalMysqlTableInsertTask):
     """
     Creates/populates the `course_activity` Result store table.
     """
@@ -271,13 +267,6 @@ class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownst
 
         return query
 
-    def rows(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
     @property
     def record_filter(self):
         if self.overwrite:
@@ -302,10 +291,6 @@ class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownst
             ('course_id', 'label'),
             ('interval_end',)
         ]
-
-    @property
-    def insert_source_task(self):
-        return None
 
     def requires(self):
         if self.overwrite_n_days > 0:

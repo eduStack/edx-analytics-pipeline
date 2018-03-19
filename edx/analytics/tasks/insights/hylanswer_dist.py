@@ -18,7 +18,7 @@ from luigi.configuration import get_config
 import edx.analytics.tasks.util.eventlog as eventlog
 import edx.analytics.tasks.util.opaque_key_util as opaque_key_util
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
-from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, MysqlInsertTaskMixin
+from edx.analytics.tasks.common.mysql_load import MysqlInsertTaskMixin, MysqlTableTask
 from edx.analytics.tasks.common.pathutil import PathSetTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
 from edx.analytics.tasks.util.url import ExternalURL, get_target_from_url, url_path_join
@@ -693,16 +693,12 @@ class AnswerDistributionPerCourse(AnswerDistributionDownstreamMixin, luigi.Task)
         # super(AnswerDistributionPerCourse, self).run()
 
 
-class AnswerDistributionToMySQLTaskWorkflow(AnswerDistributionDownstreamMixin, MysqlInsertTask):
+class AnswerDistributionToMySQLTaskWorkflow(AnswerDistributionDownstreamMixin, MysqlTableTask):
     """
     Define answer_distribution table.
     """
     # Override the parameter that normally defaults to false. This ensures that the table will always be overwritten.
     overwrite = luigi.BooleanParameter(default=True, significant=False)
-
-    @property
-    def insert_source_task(self):
-        return None
 
     def rows(self):
         """
@@ -770,11 +766,9 @@ class AnswerDistributionToMySQLTaskWorkflow(AnswerDistributionDownstreamMixin, M
         )
 
     def requires(self):
-        yield super(AnswerDistributionToMySQLTaskWorkflow, self).requires()['credentials']
-
-        requires_local = self.requires_local()
-        if isinstance(requires_local, luigi.Task):
-            yield requires_local
+        for req in super(AnswerDistributionToMySQLTaskWorkflow, self).requires():
+            yield req
+        yield self.requires_local()
 
 
 @workflow_entry_point

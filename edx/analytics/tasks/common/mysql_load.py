@@ -532,7 +532,7 @@ class MysqlTableTask(MysqlInsertTask):
 
     @property
     def insert_query(self):
-        raise NotImplementedError
+        return ''
 
     def rows(self):
         log.info('query_sql = [{}]'.format(self.insert_query))

@@ -107,7 +107,7 @@ class LastCountryOfUserEventLogSelectionTask(LastCountryOfUserDownstreamMixin, E
     FILEPATH_PATTERN = '.*?last_ip_of_user_(?P<date>\\d{4}-\\d{2}-\\d{2})'
 
     def __init__(self, *args, **kwargs):
-        super(LastCountryOfUser, self).__init__(*args, **kwargs)
+        super(LastCountryOfUserEventLogSelectionTask, self).__init__(*args, **kwargs)
 
         self.overwrite_from_date = self.interval.date_b - datetime.timedelta(days=self.overwrite_n_days)
 
@@ -172,15 +172,15 @@ class LastCountryOfUserEventLogSelectionTask(LastCountryOfUserDownstreamMixin, E
                         continue
                     raw_events.extend(events)
         columns = ['date_string', 'timestamp', ' ip_address', 'course_id', ' username']
-        log.info('raw_events = {}'.format(raw_events))
+        # log.info('raw_events = {}'.format(raw_events))
         df = pd.DataFrame(data=raw_events, columns=columns)
         for date_string, group in df.groupby(['date_string']):
-            values = group[['timestamp', 'ip_address', 'course_id', 'username']].get_values()
+            values = group.get_values()
             last_ip = defaultdict()
             last_timestamp = defaultdict()
             batch_values = []
             for value in values:
-                (timestamp, ip_address, course_id, username) = value
+                (_date_string, timestamp, ip_address, course_id, username) = value
 
                 # We are storing different IP addresses depending on the username
                 # *and* the course.  This anticipates a future requirement to provide
@@ -292,11 +292,13 @@ class LastCountryOfUserDataTask(LastCountryOfUserDownstreamMixin, GeolocationMix
         )
 
     def output(self):
-        raw_recored = self.requires_local().output()
-
+        raw_recoreds = self.requires_local().output()
+        recoreds = []
+        for recored in raw_recoreds:
+            recoreds.extend(recored)
         columns = ['username', 'timestamp', 'ip_address']
 
-        df = pd.DataFrame(data=raw_recored, columns=columns)
+        df = pd.DataFrame(data=recoreds, columns=columns)
 
         for username, group in df.groupby(['username']):
             values = group[['timestamp', 'ip_address']].get_values()
@@ -315,7 +317,7 @@ class LastCountryOfUserDataTask(LastCountryOfUserDownstreamMixin, GeolocationMix
             code = self.get_country_code(last_ip, debug_message)
 
             # Add the username for debugging purposes.  (Not needed for counts.)
-            yield (country.encode('utf8'), code.encode('utf8')), username.encode('utf8')
+            yield country.encode('utf8'), code.encode('utf8'), username.encode('utf8')
 
     def run(self):
         self.init_local()
@@ -323,7 +325,8 @@ class LastCountryOfUserDataTask(LastCountryOfUserDownstreamMixin, GeolocationMix
         super(LastCountryOfUserDataTask, self).run()
         if not self.completed:
             self.completed = True
-        self.final_reducer()
+        # self.final_reducer()
+
 
     def geolocation_data_target(self):
         return ExternalURL(self.geolocation_data)

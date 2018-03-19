@@ -7,7 +7,8 @@ import luigi.task
 import pandas as pd
 from luigi.parameter import DateIntervalParameter
 
-from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
+from edx.analytics.tasks.common.mysql_load import get_mysql_query_results, MysqlTableTask, \
+    IncrementalMysqlTableInsertTask
 from edx.analytics.tasks.common.pathutil import (
     EventLogSelectionDownstreamMixin, EventLogSelectionMixin
 )
@@ -512,7 +513,7 @@ class CourseGradeByModeRecord(Record):
     passing_users = IntegerField(nullable=True, description='The count of currently passing learners')
 
 
-class ImportAuthUserProfileTask(MysqlInsertTask):
+class ImportAuthUserProfileTask(MysqlTableTask):
     """
     Imports user demographic information from an external LMS DB to both a
     destination directory and a HIVE metastore.
@@ -521,10 +522,6 @@ class ImportAuthUserProfileTask(MysqlInsertTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportAuthUserProfileTask, self).__init__(*args, **kwargs)
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def table(self):  # pragma: no cover
@@ -553,8 +550,8 @@ class ImportAuthUserProfileTask(MysqlInsertTask):
         return AuthUserProfileSelectionTask()
 
     def requires(self):
-        yield super(ImportAuthUserProfileTask, self).requires()['credentials']
-
+        for req in super(ImportAuthUserProfileTask, self).requires():
+            yield req
         requires_local = self.requires_local()
         if isinstance(requires_local, luigi.Task):
             yield requires_local
@@ -590,7 +587,6 @@ class AuthUserProfileSelectionTask(SqoopImportMixin, luigi.Task):
     def output(self):
         query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
                                                query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
         for row in query_result:
             yield row
 
@@ -770,7 +766,8 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             yield requires
 
 
-class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, IncrementalMysqlInsertTask):
+class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
+                           IncrementalMysqlTableInsertTask):
     """Produce a data set that shows which days each user was enrolled in each course."""
 
     overwrite = None
@@ -779,10 +776,6 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         super(CourseEnrollmentTask, self).__init__(*args, **kwargs)
         self.overwrite = self.overwrite_mysql
         self.overwrite_from_date = self.interval.date_b - datetime.timedelta(days=self.overwrite_n_days)
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def table(self):  # pragma: no cover
@@ -832,15 +825,13 @@ class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         )
 
     def requires(self):
-        yield super(CourseEnrollmentTask, self).requires()['credentials']
-
-        requires_local = self.requires_local()
-        if isinstance(requires_local, luigi.Task):
-            yield requires_local
+        for req in super(CourseEnrollmentTask, self).requires():
+            yield req
+        yield self.requires_local()
 
 
 class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
-                               IncrementalMysqlInsertTask):
+                               IncrementalMysqlTableInsertTask):
     """
     A history of the number of students enrolled in each course at the end of each day.
 
@@ -854,10 +845,6 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
         super(EnrollmentDailyMysqlTask, self).__init__(*args, **kwargs)
         self.overwrite = self.overwrite_mysql
         self.overwrite_from_date = self.interval.date_b - datetime.timedelta(days=self.overwrite_n_days)
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def table(self):  # pragma: no cover
@@ -885,13 +872,6 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
         """.format(from_date.isoformat(), self.interval.date_b.isoformat())
         return query
 
-    def rows(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        for row in query_result:
-            yield row
-
     @property
     def columns(self):
         return EnrollmentDailyRecord.get_sql_schema()
@@ -914,8 +894,8 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
             return None
 
     def requires(self):
-        yield super(EnrollmentDailyMysqlTask, self).requires()['credentials']
-
+        for req in super(EnrollmentDailyMysqlTask, self).requires():
+            yield req
         # the process that generates the source table used by this query
         yield (
             CourseEnrollmentTask(
@@ -929,7 +909,7 @@ class EnrollmentDailyMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDo
 
 
 class EnrollmentByGenderMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
-                                  MysqlInsertTask):
+                                  MysqlTableTask):
     """
     A history of the number of students enrolled in each course at the end of each day.
 
@@ -941,10 +921,6 @@ class EnrollmentByGenderMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmen
 
     def __init__(self, *args, **kwargs):
         super(EnrollmentByGenderMysqlTask, self).__init__(*args, **kwargs)
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def table(self):  # pragma: no cover
@@ -969,13 +945,6 @@ class EnrollmentByGenderMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmen
         """
         return query
 
-    def rows(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        for row in query_result:
-            yield row
-
     @property
     def columns(self):
         return EnrollmentByGenderRecord.get_sql_schema()
@@ -990,8 +959,8 @@ class EnrollmentByGenderMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmen
         ]
 
     def requires(self):
-        yield super(EnrollmentByGenderMysqlTask, self).requires()['credentials']
-
+        for req in super(EnrollmentByGenderMysqlTask, self).requires():
+            yield req
         # the process that generates the source table used by this query
         yield (
             CourseEnrollmentTask(
@@ -1006,7 +975,7 @@ class EnrollmentByGenderMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmen
 
 
 class EnrollmentByBirthYearToMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
-                                       MysqlInsertTask):
+                                       MysqlTableTask):
     """
     Breakdown of enrollments by birth year as reported by the user.
 
@@ -1023,10 +992,6 @@ class EnrollmentByBirthYearToMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnro
     @property
     def table(self):  # pragma: no cover
         return 'course_enrollment_birth_year_daily'
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def insert_query(self):
@@ -1051,16 +1016,9 @@ class EnrollmentByBirthYearToMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnro
     def columns(self):
         return EnrollmentByBirthYearRecord.get_sql_schema()
 
-    def rows(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        for row in query_result:
-            yield row
-
     def requires(self):
-        yield super(EnrollmentByBirthYearToMysqlTask, self).requires()['credentials']
-
+        for req in super(EnrollmentByBirthYearToMysqlTask, self).requires():
+            yield req
         # the process that generates the source table used by this query
         yield (
             CourseEnrollmentTask(
@@ -1077,7 +1035,7 @@ class EnrollmentByBirthYearToMysqlTask(OverwriteMysqlDownstreamMixin, CourseEnro
 class EnrollmentByEducationLevelMysqlTask(
     OverwriteMysqlDownstreamMixin,
     CourseEnrollmentDownstreamMixin,
-    MysqlInsertTask
+    MysqlTableTask
 ):
     """
     Breakdown of enrollments by education level as reported by the user.
@@ -1095,10 +1053,6 @@ class EnrollmentByEducationLevelMysqlTask(
     @property
     def table(self):  # pragma: no cover
         return 'course_enrollment_education_level_daily'
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def insert_query(self):
@@ -1150,13 +1104,6 @@ class EnrollmentByEducationLevelMysqlTask(
     def columns(self):
         return EnrollmentByEducationLevelRecord.get_sql_schema()
 
-    def rows(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        for row in query_result:
-            yield row
-
     @property
     def indexes(self):
         return [
@@ -1167,8 +1114,8 @@ class EnrollmentByEducationLevelMysqlTask(
         ]
 
     def requires(self):
-        yield super(EnrollmentByEducationLevelMysqlTask, self).requires()['credentials']
-
+        for req in super(EnrollmentByEducationLevelMysqlTask, self).requires():
+            yield req
         # the process that generates the source table used by this query
         yield (
             CourseEnrollmentTask(
@@ -1223,14 +1170,10 @@ class PersistentCourseGradeDataSelectionTask(SqoopImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportPersistentCourseGradeTask(MysqlInsertTask):
+class ImportPersistentCourseGradeTask(MysqlTableTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportPersistentCourseGradeTask, self).__init__(*args, **kwargs)
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def table(self):  # pragma: no cover
@@ -1268,24 +1211,18 @@ class ImportPersistentCourseGradeTask(MysqlInsertTask):
         return PersistentCourseGradeDataSelectionTask()
 
     def requires(self):
-        yield super(ImportPersistentCourseGradeTask, self).requires()['credentials']
-
-        requires_local = self.requires_local()
-        if isinstance(requires_local, luigi.Task):
-            yield requires_local
+        for req in super(ImportPersistentCourseGradeTask, self).requires():
+            yield req
+        yield self.requires_local()
 
 
 class CourseGradeByModeDataTask(OverwriteMysqlDownstreamMixin,
-                                CourseSummaryEnrollmentDownstreamMixin, MysqlInsertTask):  # pragma: no cover
+                                CourseSummaryEnrollmentDownstreamMixin, MysqlTableTask):  # pragma: no cover
     """Aggregates data from `grades_persistentcoursegrade` into `course_grade_by_mode` Hive table."""
 
     @property
     def table(self):
         return 'course_grade_by_mode'
-
-    @property
-    def insert_source_task(self):
-        return None
 
     @property
     def insert_query(self):
@@ -1315,20 +1252,13 @@ class CourseGradeByModeDataTask(OverwriteMysqlDownstreamMixin,
                  all_enrollments.mode
         """
 
-    def rows(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
     @property
     def columns(self):
         return CourseGradeByModeRecord.get_sql_schema()
 
     def requires(self):
-        yield super(CourseGradeByModeDataTask, self).requires()['credentials']
-
+        for req in super(CourseGradeByModeDataTask, self).requires():
+            yield req
         # # We need the `grades_persistentcoursegrade` Hive table to exist before we can persist and load data.
         yield ImportPersistentCourseGradeTask()
 
@@ -1342,7 +1272,7 @@ class CourseGradeByModeDataTask(OverwriteMysqlDownstreamMixin,
         )
 
 
-class EnrollmentByModeTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, MysqlInsertTask):
+class EnrollmentByModeTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin, MysqlTableTask):
     """
     Breakdown of enrollments by mode
 
@@ -1359,10 +1289,6 @@ class EnrollmentByModeTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
     @property
     def table(self):  # pragma: no cover
         return 'course_enrollment_mode_daily'
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def insert_query(self):
@@ -1382,13 +1308,6 @@ class EnrollmentByModeTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
             """.format(date=self.query_date)
         return query
 
-    def rows(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
     @property
     def columns(self):
         return EnrollmentByModeRecord.get_sql_schema()
@@ -1403,16 +1322,13 @@ class EnrollmentByModeTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownst
         ]
 
     def requires(self):
-        yield super(EnrollmentByModeTask, self).requires()['credentials']
+        for req in super(EnrollmentByModeTask, self).requires():
+            yield req
 
 
 class CourseTableTask(LoadInternalReportingCourseCatalogMixin,
-                      OverwriteMysqlDownstreamMixin, MysqlInsertTask):
+                      OverwriteMysqlDownstreamMixin, MysqlTableTask):
     """Hive table for course catalog."""
-
-    @property
-    def insert_source_task(self):
-        return None
 
     def rows(self):
         return []
@@ -1428,7 +1344,7 @@ class CourseTableTask(LoadInternalReportingCourseCatalogMixin,
 
 class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, CourseSummaryEnrollmentDownstreamMixin,
                                            CourseEnrollmentDownstreamMixin,
-                                           IncrementalMysqlInsertTask):
+                                           IncrementalMysqlTableInsertTask):
     """Hive partition that stores the set of users enrolled in each course over time."""
     overwrite = None
 
@@ -1439,10 +1355,6 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
     @property
     def table(self):  # pragma: no cover
         return 'course_meta_summary_enrollment'
-
-    @property
-    def insert_source_task(self):
-        return None
 
     @property
     def insert_query(self):
@@ -1480,13 +1392,6 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
         )
         return query
 
-    def rows(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
     @property
     def columns(self):
         return CourseSummaryEnrollmentRecord.get_sql_schema()
@@ -1496,7 +1401,9 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
         return [('course_id',)]
 
     def requires(self):
-        yield super(CourseMetaSummaryEnrollmentIntoMysql, self).requires()['credentials']
+        for req in super(CourseMetaSummaryEnrollmentIntoMysql, self).requires():
+            yield req
+
         catalog_tasks = [
             # Currently overwriting is not set up correctly on CoursePartition so let's leave it as default (false).
             CourseTableTask(

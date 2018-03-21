@@ -54,8 +54,7 @@ class OverwriteFromDateMixin(object):
     )
 
 
-class ModuleEngagementDownstreamMixin(WarehouseMixin, MapReduceJobTaskMixin, EventLogSelectionDownstreamMixin,
-                                      OverwriteFromDateMixin):
+class ModuleEngagementDownstreamMixin(WarehouseMixin, EventLogSelectionDownstreamMixin, OverwriteFromDateMixin):
     """Common parameters and base classes used to pass parameters through the engagement workflow."""
 
     # Required parameter
@@ -366,8 +365,7 @@ class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysq
         yield self.requires_local()
 
 
-class ModuleEngagementIntervalTask(EventLogSelectionDownstreamMixin, OverwriteOutputMixin, OverwriteFromDateMixin,
-                                   luigi.WrapperTask):
+class ModuleEngagementIntervalTask(EventLogSelectionDownstreamMixin, OverwriteFromDateMixin, luigi.WrapperTask):
     """Compute engagement information over a range of dates and insert the results into Hive and MySQL"""
 
     overwrite_mysql = luigi.BooleanParameter(
@@ -404,7 +402,7 @@ SURNAMES = ['smith', 'johnson', 'williams', 'jones', 'brown', 'davis', 'miller',
 
 @workflow_entry_point  # pylint: disable=missing-docstring
 class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEngagementRosterIndexDownstreamMixin,
-                                   luigi.WrapperTask):
+                                      luigi.WrapperTask):
     __doc__ = """
     A rapidly searchable learner roster for each course with aggregate statistics about that learner's performance.
 

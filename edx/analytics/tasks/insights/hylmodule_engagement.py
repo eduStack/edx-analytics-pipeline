@@ -293,11 +293,10 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
     def get_raw_events_from_log_file(self, input_file):
         raw_events = []
         for line in input_file:
-            log.info('line = {}'.format(line))
             event_row = self.mapper(line)
             if not event_row:
                 continue
-            raw_events.append(event_row)
+            raw_events.extend(event_row)
         return raw_events
 
     def output(self):
@@ -317,7 +316,7 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
             pass
         else:
             df = pd.DataFrame(data=raw_events, columns=columns)
-            for ((course_id, username, date, entity_type, entity_id, action), count), group in df.groupby(
+            for (course_id, username, date, entity_type, entity_id, action), group in df.groupby(
                     ['record_without_count']):
                 values = group.get_values()
                 yield (course_id, username, date, entity_type, entity_id, action, len(values))

@@ -190,6 +190,123 @@ class ModuleEngagementSummaryMetricRangeRecord(Record):
     high_value = FloatField(description='High value for the range. Exact matches are excluded from the range.')
 
 
+class ModuleEngagementSummaryRecord(Record):
+    """
+    Summarizes a user's engagement with a particular course in the past week with simple counts of activity.
+    """
+
+    course_id = StringField(description='Course the learner interacted with.')
+    username = StringField(description='Learner\'s username.')
+    start_date = DateField(description='Analysis includes all data from 00:00 on this day up to the end date.')
+    end_date = DateField(description='Analysis includes all data up to but not including this date.')
+    problem_attempts = IntegerField(is_metric=True, description='Number of times the learner attempted any problem in'
+                                                                ' the course.')
+    problems_attempted = IntegerField(is_metric=True, description='Number of unique problems the learner has ever'
+                                                                  ' attempted in the course.')
+    problems_completed = IntegerField(is_metric=True, description='Number of unique problems the learner has ever'
+                                                                  ' completed correctly in the course.')
+    problem_attempts_per_completed = FloatField(is_metric=True, description='Ratio of the number of attempts the'
+                                                                            ' learner has made on any problem to the'
+                                                                            ' number of unique problems they have'
+                                                                            ' completed correctly in the course.')
+    videos_viewed = IntegerField(is_metric=True, description='Number of unique videos the learner has watched any part'
+                                                             ' of in the course.')
+    discussion_contributions = IntegerField(is_metric=True, description='Total number of posts, responses and comments'
+                                                                        ' the learner has made in the course.')
+    days_active = IntegerField(description='Number of days the learner performed any activity in.')
+
+    def get_metrics(self):
+        """
+        A generator that returns all fields that are metrics.
+
+        Returns: A generator of tuples whose first element is the metric name, and the second is the value of the metric
+            for this particular record.
+        """
+        for field_name, field_obj in self.get_fields().items():
+            if getattr(field_obj, 'is_metric', False):
+                yield field_name, getattr(self, field_name)
+
+
+class ModuleEngagementSummaryRecordBuilder(object):
+    """Gather the data needed to emit a sparse weekly course engagement record"""
+
+    def __init__(self):
+        self.problem_attempts = 0
+        self.problems_attempted = set()
+        self.problems_completed = set()
+        self.videos_viewed = set()
+        self.discussion_contributions = 0
+        self.days_active = set()
+
+    def add_record(self, record):
+        """
+        Updates metrics based on the provided record.
+
+        Arguments:
+            record (ModuleEngagementRecord): The record to aggregate.
+        """
+        self.days_active.add(record.date)
+
+        count = int(record.count)
+        if record.entity_type == 'problem':
+            if record.event == 'attempted':
+                self.problem_attempts += count
+                self.problems_attempted.add(record.entity_id)
+            elif record.event == 'completed':
+                self.problems_completed.add(record.entity_id)
+        elif record.entity_type == 'video':
+            if record.event == 'viewed':
+                self.videos_viewed.add(record.entity_id)
+        elif record.entity_type == 'discussion':
+            self.discussion_contributions += count
+        else:
+            log.warn('Unrecognized entity type: %s', record.entity_type)
+
+    def get_summary_record(self, course_id, username, interval):
+        """
+        Given all of the records that have been added, generate a summarizing record.
+
+        Arguments:
+            course_id (string):
+            username (string):
+            interval (luigi.date_interval.DateInterval):
+
+        Returns:
+            ModuleEngagementSummaryRecord: Representing the aggregated summary of all of the learner's activity.
+        """
+        attempts_per_completion = self.compute_attempts_per_completion(
+            self.problem_attempts,
+            len(self.problems_completed)
+        )
+
+        return ModuleEngagementSummaryRecord(
+            course_id,
+            username,
+            interval.date_a,
+            interval.date_b,
+            self.problem_attempts,
+            len(self.problems_attempted),
+            len(self.problems_completed),
+            attempts_per_completion,
+            len(self.videos_viewed),
+            self.discussion_contributions,
+            len(self.days_active)
+        )
+
+    @staticmethod
+    def compute_attempts_per_completion(num_problem_attempts, num_problems_completed):
+        """
+        The ratio of attempts per correct problem submission is an indicator of how much a student is struggling.
+
+        If a student has not completed any problems a value of float('inf') is returned.
+        """
+        if num_problems_completed > 0:
+            attempts_per_completion = float(num_problem_attempts) / num_problems_completed
+        else:
+            attempts_per_completion = float('inf')
+        return attempts_per_completion
+
+
 class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, luigi.Task):
     """
     Process the event log and categorize user engagement with various types of content.
@@ -414,7 +531,9 @@ class ModuleEngagementIntervalTask(ModuleEngagementDownstreamMixin, WeekInterval
         """
         for task in self.requires():
             if isinstance(task, ModuleEngagementTableTask):
-                yield task
+                data_task = task.requires_local()
+                if isinstance(data_task, ModuleEngagementDataTask):
+                    yield data_task
 
     def complete(self):
         return self.completed
@@ -423,6 +542,85 @@ class ModuleEngagementIntervalTask(ModuleEngagementDownstreamMixin, WeekInterval
         log.info('ModuleEngagementIntervalTask running')
         if not self.completed:
             self.completed = True
+
+
+class ModuleEngagementSummaryDataTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin, OverwriteOutputMixin,
+                                      luigi.Task):
+    completed = False
+
+    def complete(self):
+        return self.completed
+
+    def output(self):
+        require = self.requires_local()
+        if require:
+            for task in require.get_raw_data_tasks():
+                for raw_events in task.output():
+                    columns = ['course_id', 'username', 'date', 'entity_type', 'entity_id', 'action', 'count']
+                    log.info('raw_events = {}'.format(raw_events))
+                    if len(raw_events) == 0:
+                        log.warn('raw_events is empty!')
+                        pass
+                    else:
+                        df = pd.DataFrame(data=raw_events, columns=columns)
+
+                        for (course_id, username), group in df.groupby(['course_id', 'username']):
+                            values = group[['date', 'entity_type', 'entity_id', 'action', 'count']].get_values()
+                            output_record_builder = ModuleEngagementSummaryRecordBuilder()
+                            for line in values:
+                                record = ModuleEngagementRecord(course_id=course_id, username=username, date=line[0],
+                                                                entity_type=line[1], entity_id=line[2],
+                                                                event=line[3], count=line[4])
+                                output_record_builder.add_record(record)
+
+                                yield output_record_builder.get_summary_record(course_id, username,
+                                                                               self.interval).to_string_tuple()
+
+    def run(self):
+        log.info('ModuleEngagementSummaryDataTask running')
+        if not self.completed:
+            self.completed = True
+
+    def requires(self):
+        for req in super(ModuleEngagementSummaryDataTask, self).requires():
+            yield req
+        yield self.requires_local()
+
+    def requires_local(self):
+        return ModuleEngagementIntervalTask(
+            date=self.date,
+            overwrite_from_date=self.overwrite_from_date,
+        )
+
+
+class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin, OverwriteOutputMixin,
+                                       MysqlTableTask):
+    """The hive table for this summary of engagement data."""
+
+    @property
+    def table(self):
+        return 'module_engagement_summary'
+
+    @property
+    def columns(self):
+        return ModuleEngagementSummaryRecord.get_sql_schema()
+
+    def requires(self):
+        for req in super(ModuleEngagementSummaryTableTask, self).requires():
+            yield req
+        yield self.requires_local()
+
+    def requires_local(self):
+        return ModuleEngagementSummaryDataTask(
+            date=self.date,
+            overwrite_from_date=self.overwrite_from_date,
+        )
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
 
 
 NAMES = ['james', 'john', 'robert', 'william', 'michael', 'david', 'richard', 'charles', 'joseph', 'thomas',
@@ -507,7 +705,7 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
 
     def requires(self):
         overwrite_from_date = self.date - datetime.timedelta(days=self.overwrite_n_days)
-        return ModuleEngagementIntervalTask(
+        return ModuleEngagementSummaryDataTask(
             date=self.date,
             overwrite_from_date=overwrite_from_date,
         )

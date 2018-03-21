@@ -41,6 +41,9 @@ METRIC_RANGE_HIGH = 'high'
 METRIC_RANGE_NORMAL = 'normal'
 METRIC_RANGE_LOW = 'low'
 
+SEGMENT_HIGHLY_ENGAGED = 'highly_engaged'
+SEGMENT_STRUGGLING = 'struggling'
+
 
 class OverwriteFromDateMixin(object):
     """Supports overwriting a subset of the data to compensate for late events."""
@@ -306,6 +309,25 @@ class ModuleEngagementSummaryRecordBuilder(object):
         else:
             attempts_per_completion = float('inf')
         return attempts_per_completion
+
+
+class ModuleEngagementUserSegmentRecord(Record):
+    """
+    Maps a user's activity in a course to various segments.
+    """
+
+    course_id = StringField(description='Course the learner is enrolled in.')
+    username = StringField(description='Learner\'s username.')
+    start_date = DateField(description='Analysis includes all data from 00:00 on this day up to the end date.')
+    end_date = DateField(description='Analysis includes all data up to but not including this date.')
+    segment = StringField(description='A short term that includes only lower case characters and underscores that'
+                                      ' indicates a group that the user belongs to. For example: highly_engaged.')
+    reason = StringField(description='A human readable description of the reason for the student being placed in this'
+                                     ' segment.')
+
+
+SEGMENT_HIGHLY_ENGAGED = 'highly_engaged'
+SEGMENT_STRUGGLING = 'struggling'
 
 
 class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, luigi.Task):
@@ -733,12 +755,12 @@ class ModuleEngagementSummaryMetricRangesMysqlTask(ModuleEngagementDownstreamMix
             unprocessed_metrics = set()
             first_record = None
             for line in values:
-                record = ModuleEngagementSummaryRecord(course_id=line[0], username=line[1], start_date=line[2],
-                                                       end_date=line[3], problem_attempts=line[4],
-                                                       problems_attempted=line[5], problems_completed=line[6],
-                                                       problem_attempts_per_completed=line[7],
-                                                       videos_viewed=line[8], discussion_contributions=line[9],
-                                                       days_active=line[10])
+                record = ModuleEngagementSummaryRecord(course_id=course_id, username=line[0], start_date=line[1],
+                                                       end_date=line[2], problem_attempts=line[3],
+                                                       problems_attempted=line[4], problems_completed=line[5],
+                                                       problem_attempts_per_completed=line[6],
+                                                       videos_viewed=line[7], discussion_contributions=line[8],
+                                                       days_active=line[9])
                 if first_record is None:
                     # There is some information we need to copy out of the summary records, so just grab one of them. There
                     # will be at least one, or else the reduce function would have never been called.
@@ -797,6 +819,130 @@ class ModuleEngagementSummaryMetricRangesMysqlTask(ModuleEngagementDownstreamMix
                     low_value=0,
                     high_value=float('inf')
                 ).to_string_tuple()
+
+
+class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, MysqlTableTask):
+    """Hive table for user segment assignments."""
+
+    @property
+    def table(self):
+        return 'module_engagement_user_segments'
+
+    @property
+    def columns(self):
+        return ModuleEngagementUserSegmentRecord.get_sql_schema()
+
+    @property
+    def insert_query(self):
+        query = """
+            SELECT course_id,
+                  username,
+                  start_date,
+                  end_date,
+                  problem_attempts,
+                  problems_attempted,
+                  problems_completed,
+                  problem_attempts_per_completed,
+                  videos_viewed,
+                  discussion_contributions,
+                  days_active
+            FROM module_engagement_summary
+        """
+        return query
+
+    def rows(self):
+        self.init_local()
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        columns = ['course_id', 'username', 'start_date', 'end_date', 'problem_attempts', 'problems_attempted',
+                   'problems_completed', 'problem_attempts_per_completed', 'videos_viewed',
+                   'discussion_contributions', ' days_active']
+
+        log.info('raw_events = {}'.format(query_result))
+        df = pd.DataFrame(data=query_result, columns=columns)
+
+        for (course_id, username), group in df.groupby(['course_id', 'username']):
+            values = group[['start_date', 'end_date', 'problem_attempts', 'problems_attempted',
+                            'problems_completed', 'problem_attempts_per_completed', 'videos_viewed',
+                            'discussion_contributions', ' days_active']].get_values()
+
+            records = [ModuleEngagementSummaryRecord(course_id=course_id, username=username, start_date=line[0],
+                                                     end_date=line[1], problem_attempts=line[2],
+                                                     problems_attempted=line[6], problems_completed=line[4],
+                                                     problem_attempts_per_completed=line[5],
+                                                     videos_viewed=line[6], discussion_contributions=line[7],
+                                                     days_active=line[8]) for line in values]
+
+            if len(records) > 1:
+                raise RuntimeError('There should be exactly one summary record per user per course.')
+
+            summary = records[0]
+
+            # Maps segment names to a set of "reasons" that tell why the user was placed in that segment
+            segments = defaultdict(set)
+            for metric, value in summary.get_metrics():
+                high_metric_range = self.high_metric_ranges.get(course_id, {}).get(metric)
+                if high_metric_range is None or metric == 'problem_attempts':
+                    continue
+
+                # Typically a left-closed interval, however, we consider infinite values to be included in the interval
+                # if the upper bound is infinite.
+                value_less_than_high = (
+                        (value < high_metric_range.high_value) or
+                        (value in (float('inf'), float('-inf')) and high_metric_range.high_value == value)
+                )
+                if (high_metric_range.low_value <= value) and value_less_than_high:
+                    if metric == 'problem_attempts_per_completed':
+                        # A high value for this metric actually indicates a struggling student
+                        segments[SEGMENT_STRUGGLING].add(metric)
+                    else:
+                        segments[SEGMENT_HIGHLY_ENGAGED].add(metric)
+
+            for segment in sorted(segments):
+                yield ModuleEngagementUserSegmentRecord(
+                    course_id=course_id,
+                    username=username,
+                    start_date=records[0].start_date,
+                    end_date=records[0].end_date,
+                    segment=segment,
+                    reason=','.join(segments[segment])
+                ).to_string_tuple()
+
+    def requires(self):
+        for req in super(ModuleEngagementUserSegmentTableTask, self).requires():
+            yield req
+        yield ModuleEngagementSummaryTableTask(
+            date=self.date,
+            overwrite_from_date=self.overwrite_from_date,
+        )
+
+    def init_local(self):
+        self.high_metric_ranges = defaultdict(dict)
+        query = """
+        SELECT 
+               course_id, 
+               start_date, 
+               end_date, 
+               metric, 
+               range_type, 
+               low_value, 
+               high_value
+        FROM reports.module_engagement_metric_ranges
+        """
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=query)
+        for row in query_result:
+            range_record = ModuleEngagementSummaryMetricRangeRecord(course_id=row[0],
+                                                                    start_date=row[1],
+                                                                    end_date=row[2],
+                                                                    metric=row[3],
+                                                                    range_type=row[4],
+                                                                    low_value=row[5],
+                                                                    high_value=row[6])
+            if range_record.range_type == METRIC_RANGE_HIGH:
+                self.high_metric_ranges[range_record.course_id][range_record.metric] = range_record
 
 
 NAMES = ['james', 'john', 'robert', 'william', 'michael', 'david', 'richard', 'charles', 'joseph', 'thomas',
@@ -897,7 +1043,6 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
         yield ModuleEngagementSummaryMetricRangesMysqlTask(
             date=self.date,
             overwrite_from_date=overwrite_from_date,
-            n_reduce_tasks=self.n_reduce_tasks,
         )
 
     def output(self):

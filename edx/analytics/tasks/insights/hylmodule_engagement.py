@@ -365,13 +365,15 @@ class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysq
         yield self.requires_local()
 
 
-class ModuleEngagementIntervalTask(EventLogSelectionDownstreamMixin, OverwriteFromDateMixin, luigi.WrapperTask):
+class ModuleEngagementIntervalTask(EventLogSelectionDownstreamMixin, OverwriteFromDateMixin, luigi.Task):
     """Compute engagement information over a range of dates and insert the results into Hive and MySQL"""
 
     overwrite_mysql = luigi.BooleanParameter(
         default=True,
         significant=False
     )
+
+    completed = False
 
     def requires(self):
         for date in reversed([d for d in self.interval]):  # pylint: disable=not-an-iterable
@@ -393,6 +395,14 @@ class ModuleEngagementIntervalTask(EventLogSelectionDownstreamMixin, OverwriteFr
         for task in self.requires():
             if isinstance(task, ModuleEngagementTableTask):
                 yield task
+
+    def complete(self):
+        return self.completed
+
+    def run(self):
+        log.info('ModuleEngagementIntervalTask running')
+        if not self.completed:
+            self.completed = True
 
 
 NAMES = ['james', 'john', 'robert', 'william', 'michael', 'david', 'richard', 'charles', 'joseph', 'thomas',

@@ -596,7 +596,7 @@ class ModuleEngagementIntervalTask(ModuleEngagementDownstreamMixin, WeekInterval
 #         )
 #
 
-class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin, MysqlTableTask):
+class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin, IncrementalMysqlTableInsertTask):
     """The hive table for this summary of engagement data."""
 
     @property
@@ -650,6 +650,11 @@ class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownst
 
             yield output_record_builder.get_summary_record(row[0], row[1],
                                                            self.interval).to_string_tuple()
+
+    @property
+    def record_filter(self):
+        return """`date` >= '{}' AND `date` <= '{}'""".format(self.interval.date_a.isoformat(),
+                                                              self.interval.date_b.isoformat())
 
 
 NAMES = ['james', 'john', 'robert', 'william', 'michael', 'david', 'richard', 'charles', 'joseph', 'thomas',

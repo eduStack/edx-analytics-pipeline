@@ -219,7 +219,7 @@ class Record(object):
                 if not isinstance(field_obj, Field):
                     continue
 
-                fields.append(('`{}`'.format(field_name), field_obj))
+                fields.append(('{}'.format(field_name), field_obj))
 
                 # Field ordering matters! Note that parent classes must be processed before any subclasses, so their
                 # fields will appear first in the list. Also note that the ordering is very difficult to predict in
@@ -341,7 +341,7 @@ class Record(object):
         """
         schema = []
         for field_name, field_obj in cls.get_fields().items():
-            schema.append((field_name, field_obj.sql_type))
+            schema.append(('`{}`'.format(field_name), field_obj.sql_type))
         return schema
 
     @classmethod

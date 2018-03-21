@@ -293,6 +293,7 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
     def get_raw_events_from_log_file(self, input_file):
         raw_events = []
         for line in input_file:
+            log.info('line = {}'.format(line))
             event_row = self.mapper(line)
             if not event_row:
                 continue
@@ -313,6 +314,7 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
         log.info('raw_events = {}'.format(raw_events))
         if len(raw_events) == 0:
             log.warn('raw_events is empty!')
+            pass
         else:
             df = pd.DataFrame(data=raw_events, columns=columns)
             for ((course_id, username, date, entity_type, entity_id, action), count), group in df.groupby(
@@ -353,6 +355,7 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
 
 class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysqlTableInsertTask):
     """The hive table for this engagement data."""
+    allow_empty_insert = True
 
     @property
     def table(self):

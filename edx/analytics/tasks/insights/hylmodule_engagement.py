@@ -596,7 +596,8 @@ class ModuleEngagementIntervalTask(ModuleEngagementDownstreamMixin, WeekInterval
 #         )
 #
 
-class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin, IncrementalMysqlTableInsertTask):
+class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin,
+                                       IncrementalMysqlTableInsertTask):
     """The hive table for this summary of engagement data."""
 
     @property
@@ -641,15 +642,27 @@ class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownst
         query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
                                                query=self.insert_query)
 
-        output_record_builder = ModuleEngagementSummaryRecordBuilder()
-        for row in query_result:
-            record = ModuleEngagementRecord(course_id=row[0], username=row[1], date=row[2],
-                                            entity_type=row[3], entity_id=row[4],
-                                            event=row[5], count=row[6])
-            output_record_builder.add_record(record)
+        columns = ['course_id', 'username', 'date', 'entity_type', 'entity_id', 'action', 'count']
+        log.info('raw_events = {}'.format(query_result))
+        df = pd.DataFrame(data=query_result, columns=columns)
 
-            yield output_record_builder.get_summary_record(row[0], row[1],
-                                                           self.interval).to_string_tuple()
+        for (course_id, username), group in df.groupby(['course_id', 'username']):
+            values = group[['date', 'entity_type', 'entity_id', 'action', 'count']].get_values()
+            output_record_builder = ModuleEngagementSummaryRecordBuilder()
+            for line in values:
+                record = ModuleEngagementRecord(course_id=course_id, username=username, date=line[0],
+                                                entity_type=line[1], entity_id=line[2],
+                                                event=line[3], count=line[4])
+                output_record_builder.add_record(record)
+
+            yield output_record_builder.get_summary_record(course_id, username, self.interval).to_string_tuple()
+        # for row in query_result:
+        #     record = ModuleEngagementRecord(course_id=row[0], username=row[1], date=row[2],
+        #                                     entity_type=row[3], entity_id=row[4],
+        #                                     event=row[5], count=row[6])
+        #     output_record_builder.add_record(record)
+        #
+        # yield output_record_builder.get_summary_record(row[0], row[1], self.interval).to_string_tuple()
 
     @property
     def record_filter(self):

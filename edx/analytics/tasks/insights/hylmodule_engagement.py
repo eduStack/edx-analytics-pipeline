@@ -403,7 +403,7 @@ SURNAMES = ['smith', 'johnson', 'williams', 'jones', 'brown', 'davis', 'miller',
 
 
 @workflow_entry_point  # pylint: disable=missing-docstring
-class ModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEngagementRosterIndexDownstreamMixin,
+class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEngagementRosterIndexDownstreamMixin,
                                    luigi.WrapperTask):
     __doc__ = """
     A rapidly searchable learner roster for each course with aggregate statistics about that learner's performance.

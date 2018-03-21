@@ -54,7 +54,7 @@ class OverwriteFromDateMixin(object):
     )
 
 
-class ModuleEngagementDownstreamMixin(WarehouseMixin, EventLogSelectionDownstreamMixin, OverwriteFromDateMixin):
+class ModuleEngagementDownstreamMixin(EventLogSelectionDownstreamMixin, OverwriteFromDateMixin):
     """Common parameters and base classes used to pass parameters through the engagement workflow."""
 
     # Required parameter
@@ -88,6 +88,19 @@ class ModuleEngagementRosterIndexDownstreamMixin(object):
         description=ElasticsearchIndexTask.indexing_tasks.description
     )
 
+
+class WeekIntervalMixin(object):
+    """
+    For tasks that accept a date parameter that represents the end date of a week.
+
+    The date is used to set an `interval` attribute that represents the complete week.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super(WeekIntervalMixin, self).__init__(*args, **kwargs)
+
+        start_date = self.date - datetime.timedelta(weeks=1)
+        self.interval = date_interval.Custom(start_date, self.date)
 
 class ModuleEngagementRecord(Record):
     """Represents a count of interactions performed by a user on a particular entity (usually a module in a course)."""
@@ -365,7 +378,8 @@ class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysq
         yield self.requires_local()
 
 
-class ModuleEngagementIntervalTask(EventLogSelectionDownstreamMixin, OverwriteFromDateMixin, luigi.Task):
+class ModuleEngagementIntervalTask(WeekIntervalMixin, EventLogSelectionDownstreamMixin, OverwriteFromDateMixin,
+                                   luigi.Task):
     """Compute engagement information over a range of dates and insert the results into Hive and MySQL"""
 
     overwrite_mysql = luigi.BooleanParameter(
@@ -376,8 +390,10 @@ class ModuleEngagementIntervalTask(EventLogSelectionDownstreamMixin, OverwriteFr
     completed = False
 
     def requires(self):
+        log.info('self.interval = {}'.format(self.interval))
         for date in reversed([d for d in self.interval]):  # pylint: disable=not-an-iterable
             should_overwrite = date >= self.overwrite_from_date
+            log.info('should_overwrite = {}, date = {}'.format(should_overwrite, date))
             yield ModuleEngagementTableTask(
                 date=date,
                 overwrite=should_overwrite,
@@ -488,7 +504,7 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
     def requires(self):
         overwrite_from_date = self.date - datetime.timedelta(days=self.overwrite_n_days)
         return ModuleEngagementIntervalTask(
-            interval=self.interval,
+            date=self.date,
             overwrite_from_date=overwrite_from_date,
         )
         # yield ModuleEngagementRosterIndexTask(

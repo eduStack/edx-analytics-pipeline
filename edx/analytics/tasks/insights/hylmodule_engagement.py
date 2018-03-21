@@ -496,7 +496,7 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
 
 class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysqlTableInsertTask):
     """The hive table for this engagement data."""
-    allow_empty_insert = True
+    allow_empty_insert = False
 
     @property
     def table(self):
@@ -930,9 +930,9 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
                range_type, 
                low_value, 
                high_value
-        FROM reports.module_engagement_metric_ranges
+        FROM module_engagement_metric_ranges
         """
-        log.info('query_sql = [{}]'.format(self.insert_query))
+        log.info('query_sql = [{}]'.format(query))
         query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
                                                query=query)
         for row in query_result:

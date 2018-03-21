@@ -316,13 +316,15 @@ class ModuleEngagementUserSegmentRecord(Record):
     Maps a user's activity in a course to various segments.
     """
 
-    course_id = StringField(description='Course the learner is enrolled in.')
-    username = StringField(description='Learner\'s username.')
+    course_id = StringField(length=255, nullable=False, description='Course the learner is enrolled in.')
+    username = StringField(length=255, nullable=False, description='Learner\'s username.')
     start_date = DateField(description='Analysis includes all data from 00:00 on this day up to the end date.')
     end_date = DateField(description='Analysis includes all data up to but not including this date.')
-    segment = StringField(description='A short term that includes only lower case characters and underscores that'
+    segment = StringField(length=255, nullable=False,
+                          description='A short term that includes only lower case characters and underscores that'
                                       ' indicates a group that the user belongs to. For example: highly_engaged.')
-    reason = StringField(description='A human readable description of the reason for the student being placed in this'
+    reason = StringField(length=255, nullable=False,
+                         description='A human readable description of the reason for the student being placed in this'
                                      ' segment.')
 
 
@@ -1041,6 +1043,11 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
         #     throttle=self.throttle
         # )
         yield ModuleEngagementSummaryMetricRangesMysqlTask(
+            date=self.date,
+            overwrite_from_date=overwrite_from_date,
+        )
+
+        yield ModuleEngagementUserSegmentTableTask(
             date=self.date,
             overwrite_from_date=overwrite_from_date,
         )

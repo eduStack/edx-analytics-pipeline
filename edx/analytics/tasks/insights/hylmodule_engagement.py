@@ -102,6 +102,7 @@ class WeekIntervalMixin(object):
         start_date = self.date - datetime.timedelta(weeks=1)
         self.interval = date_interval.Custom(start_date, self.date)
 
+
 class ModuleEngagementRecord(Record):
     """Represents a count of interactions performed by a user on a particular entity (usually a module in a course)."""
 
@@ -310,12 +311,14 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
                     raw_events.extend(events)
         columns = ['record_without_count', 'count']
         log.info('raw_events = {}'.format(raw_events))
-
-        df = pd.DataFrame(data=raw_events, columns=columns)
-        for ((course_id, username, date, entity_type, entity_id, action), count), group in df.groupby(
-                ['record_without_count']):
-            values = group.get_values()
-            yield (course_id, username, date, entity_type, entity_id, action, len(values))
+        if len(raw_events) == 0:
+            log.warn('raw_events is empty!')
+        else:
+            df = pd.DataFrame(data=raw_events, columns=columns)
+            for ((course_id, username, date, entity_type, entity_id, action), count), group in df.groupby(
+                    ['record_without_count']):
+                values = group.get_values()
+                yield (course_id, username, date, entity_type, entity_id, action, len(values))
 
     def complete(self):
         return self.completed
@@ -378,8 +381,7 @@ class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysq
         yield self.requires_local()
 
 
-class ModuleEngagementIntervalTask(WeekIntervalMixin, EventLogSelectionDownstreamMixin, OverwriteFromDateMixin,
-                                   luigi.Task):
+class ModuleEngagementIntervalTask(ModuleEngagementDownstreamMixin, WeekIntervalMixin, luigi.Task):
     """Compute engagement information over a range of dates and insert the results into Hive and MySQL"""
 
     overwrite_mysql = luigi.BooleanParameter(

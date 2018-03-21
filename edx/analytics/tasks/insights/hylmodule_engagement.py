@@ -596,8 +596,7 @@ class ModuleEngagementIntervalTask(ModuleEngagementDownstreamMixin, WeekInterval
 #         )
 #
 
-class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin,
-                                       IncrementalMysqlTableInsertTask):
+class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin, MysqlTableTask):
     """The hive table for this summary of engagement data."""
 
     @property
@@ -664,10 +663,140 @@ class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownst
         #
         # yield output_record_builder.get_summary_record(row[0], row[1], self.interval).to_string_tuple()
 
+
+class ModuleEngagementSummaryMetricRangesMysqlTask(ModuleEngagementDownstreamMixin, MysqlTableTask):
+    """Result store storage for the metric ranges."""
+    low_percentile = luigi.FloatParameter(default=15.0)
+    high_percentile = luigi.FloatParameter(default=85.0)
+
+    overwrite = luigi.BooleanParameter(
+        default=True,
+        description='Overwrite the table when writing to it by default. Allow users to override this behavior if they '
+                    'want.',
+        significant=False
+    )
+    allow_empty_insert = luigi.BooleanParameter(
+        default=False,
+        config_path={'section': 'module-engagement', 'name': 'allow_empty_insert'},
+    )
+
     @property
-    def record_filter(self):
-        return """`date` >= '{}' AND `date` <= '{}'""".format(self.interval.date_a.isoformat(),
-                                                              self.interval.date_b.isoformat())
+    def table(self):
+        return "module_engagement_metric_ranges"
+
+    @property
+    def columns(self):
+        return ModuleEngagementSummaryMetricRangeRecord.get_sql_schema()
+
+    @property
+    def indexes(self):
+        return [
+            ('course_id', 'metric'),
+        ]
+
+    @property
+    def insert_query(self):
+        query = """
+            SELECT course_id,
+                  username,
+                  start_date,
+                  end_date,
+                  problem_attempts,
+                  problems_attempted,
+                  problems_completed,
+                  problem_attempts_per_completed,
+                  videos_viewed,
+                  discussion_contributions,
+                  days_active
+            FROM module_engagement_summary
+        """
+        return query
+
+    def rows(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        columns = ['course_id', 'username', 'start_date', 'end_date', 'problem_attempts', 'problems_attempted',
+                   'problems_completed', 'problem_attempts_per_completed', 'videos_viewed',
+                   'discussion_contributions', ' days_active']
+
+        log.info('raw_events = {}'.format(query_result))
+        df = pd.DataFrame(data=query_result, columns=columns)
+
+        for course_id, group in df.groupby(['course_id']):
+            values = group[['username', 'start_date', 'end_date', 'problem_attempts', 'problems_attempted',
+                            'problems_completed', 'problem_attempts_per_completed', 'videos_viewed',
+                            'discussion_contributions', ' days_active']].get_values()
+
+            metric_values = defaultdict(list)
+
+            unprocessed_metrics = set()
+            first_record = None
+            for line in values:
+                record = ModuleEngagementSummaryRecord(course_id=line[0], username=line[1], start_date=line[2],
+                                                       end_date=line[3], problem_attempts=line[4],
+                                                       problems_attempted=line[5], problems_completed=line[6],
+                                                       problem_attempts_per_completed=line[7],
+                                                       videos_viewed=line[8], discussion_contributions=line[9],
+                                                       days_active=line[10])
+                if first_record is None:
+                    # There is some information we need to copy out of the summary records, so just grab one of them. There
+                    # will be at least one, or else the reduce function would have never been called.
+                    first_record = record
+
+                # don't include inactive learners in metric range computations
+                if record.days_active == 0:
+                    continue
+
+                for metric, value in record.get_metrics():
+                    unprocessed_metrics.add(metric)
+                    if metric == 'problem_attempts_per_completed' and record.problem_attempts == 0:
+                        # The learner needs to have at least attempted one problem in order for their float('inf') to be
+                        # included in the metric ranges. If the ratio is 0/0 we ignore the record.
+                        continue
+                    metric_values[metric].append(value)
+
+            for metric in sorted(metric_values):
+                unprocessed_metrics.remove(metric)
+                values = metric_values[metric]
+                normal_lower_bound, normal_upper_bound = numpy.percentile(  # pylint: disable=no-member
+                    values, [self.low_percentile, self.high_percentile]
+                )
+                if numpy.isnan(normal_lower_bound):
+                    normal_lower_bound = float('inf')
+                if numpy.isnan(normal_upper_bound):
+                    normal_upper_bound = float('inf')
+                ranges = []
+                if normal_lower_bound > 0:
+                    ranges.append((METRIC_RANGE_LOW, 0, normal_lower_bound))
+
+                if normal_lower_bound == normal_upper_bound:
+                    ranges.append((METRIC_RANGE_NORMAL, normal_lower_bound, float('inf')))
+                else:
+                    ranges.append((METRIC_RANGE_NORMAL, normal_lower_bound, normal_upper_bound))
+                    ranges.append((METRIC_RANGE_HIGH, normal_upper_bound, float('inf')))
+
+                for range_type, low_value, high_value in ranges:
+                    yield ModuleEngagementSummaryMetricRangeRecord(
+                        course_id=course_id,
+                        start_date=first_record.start_date,
+                        end_date=first_record.end_date,
+                        metric=metric,
+                        range_type=range_type,
+                        low_value=low_value,
+                        high_value=high_value
+                    ).to_string_tuple()
+
+            for metric in unprocessed_metrics:
+                yield ModuleEngagementSummaryMetricRangeRecord(
+                    course_id=course_id,
+                    start_date=first_record.start_date,
+                    end_date=first_record.end_date,
+                    metric=metric,
+                    range_type='normal',
+                    low_value=0,
+                    high_value=float('inf')
+                ).to_string_tuple()
 
 
 NAMES = ['james', 'john', 'robert', 'william', 'michael', 'david', 'richard', 'charles', 'joseph', 'thomas',
@@ -752,10 +881,10 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
 
     def requires(self):
         overwrite_from_date = self.date - datetime.timedelta(days=self.overwrite_n_days)
-        return ModuleEngagementSummaryTableTask(
-            date=self.date,
-            overwrite_from_date=overwrite_from_date,
-        )
+        # return ModuleEngagementSummaryTableTask(
+        #     date=self.date,
+        #     overwrite_from_date=overwrite_from_date,
+        # )
         # yield ModuleEngagementRosterIndexTask(
         #     date=self.date,
         #     indexing_tasks=self.indexing_tasks,
@@ -765,11 +894,11 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
         #     overwrite=self.overwrite,
         #     throttle=self.throttle
         # )
-        # yield ModuleEngagementSummaryMetricRangesMysqlTask(
-        #     date=self.date,
-        #     overwrite_from_date=overwrite_from_date,
-        #     n_reduce_tasks=self.n_reduce_tasks,
-        # )
+        yield ModuleEngagementSummaryMetricRangesMysqlTask(
+            date=self.date,
+            overwrite_from_date=overwrite_from_date,
+            n_reduce_tasks=self.n_reduce_tasks,
+        )
 
     def output(self):
         return [t.output() for t in self.requires()]

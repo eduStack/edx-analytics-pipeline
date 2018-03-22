@@ -152,7 +152,7 @@ class ModuleEngagementRosterRecord(Record):
                                              ' course.')
     discussion_contributions = IntegerField(description='Total number of posts, responses and comments the learner has'
                                                         ' made in the course.')
-    segments = StringField(analyzed=True, description='Classifiers that help group learners by analyzing their activity'
+    segments = StringField(length=255, nullable=False, analyzed=True, description='Classifiers that help group learners by analyzing their activity'
                                                       ' patterns. Example: "inactive" indicates the user has not'
                                                       ' engaged with the course recently. This field is analyzed by'
                                                       ' elasticsearch so that searches can be made for learners that'
@@ -1150,7 +1150,7 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
 
             Also, if self.max_field_length is set, then truncate the field to self.max_field_length.
             """
-            stripped = "regexp_replace(regexp_replace({}, '\\\\t|\\\\n|\\\\r', ' '), '\\\\\\\\', '')".format(field)
+            stripped = "replace(replace({}, '\\\\t|\\\\n|\\\\r', ' '), '\\\\\\\\', '')".format(field)
 
             if self.max_field_length is not None:
                 stripped = "substring({}, 1, {})".format(stripped, self.max_field_length)
@@ -1226,7 +1226,7 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
         LEFT OUTER JOIN module_engagement_summary eng
             ON (ce.course_id = eng.course_id AND au.username = eng.username AND eng.end_date = '{end}')
         LEFT OUTER JOIN module_engagement_summary old_eng
-            ON (ce.course_id = old_eng.course_id AND au.username = old_eng.username AND old_eng.end_date = DATE_SUB('{end}', 7))
+            ON (ce.course_id = old_eng.course_id AND au.username = old_eng.username AND old_eng.end_date = DATE_SUB('{end}', INTERVAL 7 DAY))
         LEFT OUTER JOIN (
             SELECT
                 course_id,
@@ -1242,7 +1242,7 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
             SELECT
                 course_id,
                 username,
-                CONCAT_WS(",", COLLECT_SET(segment)) AS segments
+                GROUP_CONCAT(segment) AS segments
             FROM module_engagement_user_segments
             WHERE end_date = '{end}'
             GROUP BY course_id, username
@@ -1255,7 +1255,7 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
             end=self.interval.date_b.isoformat(),  # pylint: disable=no-member
             last_complete_date=last_complete_date.isoformat(),
             aup_name=strip_and_truncate('aup.name'),
-            aup_language=strip_and_truncate('aup.language'),
+            aup_language=strip_and_truncate('aup.`language`'),
             aup_location=strip_and_truncate('aup.location'),
             aup_level_of_education=strip_and_truncate('aup.level_of_education'),
             aup_gender=strip_and_truncate('aup.gender'),

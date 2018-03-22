@@ -822,6 +822,14 @@ class ModuleEngagementSummaryMetricRangesMysqlTask(ModuleEngagementDownstreamMix
                     high_value=float('inf')
                 ).to_string_tuple()
 
+    def requires(self):
+        for req in super(ModuleEngagementSummaryMetricRangesMysqlTask, self).requires():
+            yield req
+        yield ModuleEngagementSummaryTableTask(
+            date=self.date,
+            overwrite_from_date=self.overwrite_from_date,
+        )
+
 
 class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, MysqlTableTask):
     """Hive table for user segment assignments."""
@@ -872,7 +880,7 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
             records = [ModuleEngagementSummaryRecord(course_id=course_id, username=username, start_date=line[0],
                                                      end_date=line[1], problem_attempts=line[2],
                                                      problems_attempted=line[6], problems_completed=line[4],
-                                                     problem_attempts_per_completed=line[5],
+                                                     problem_attempts_per_completed=line[5] if line[5] else float('inf'),
                                                      videos_viewed=line[6], discussion_contributions=line[7],
                                                      days_active=line[8]) for line in values]
 
@@ -914,7 +922,7 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
     def requires(self):
         for req in super(ModuleEngagementUserSegmentTableTask, self).requires():
             yield req
-        yield ModuleEngagementSummaryTableTask(
+        yield ModuleEngagementSummaryMetricRangesMysqlTask(
             date=self.date,
             overwrite_from_date=self.overwrite_from_date,
         )
@@ -941,8 +949,8 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
                                                                     end_date=row[2],
                                                                     metric=row[3],
                                                                     range_type=row[4],
-                                                                    low_value=row[5],
-                                                                    high_value=row[6])
+                                                                    low_value=row[5] if row[5] else float('inf'),
+                                                                    high_value=row[6] if row[6] else float('inf'))
             if range_record.range_type == METRIC_RANGE_HIGH:
                 self.high_metric_ranges[range_record.course_id][range_record.metric] = range_record
 

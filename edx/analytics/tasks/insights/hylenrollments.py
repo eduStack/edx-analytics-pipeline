@@ -513,7 +513,7 @@ class CourseGradeByModeRecord(Record):
     passing_users = IntegerField(nullable=True, description='The count of currently passing learners')
 
 
-class ImportAuthUserProfileTask(DatabaseImportMixin, MysqlTableTask):
+class ImportAuthUserProfileTask(MysqlTableTask):
     """
     Imports user demographic information from an external LMS DB to both a
     destination directory and a HIVE metastore.
@@ -547,7 +547,7 @@ class ImportAuthUserProfileTask(DatabaseImportMixin, MysqlTableTask):
         ]
 
     def requires_local(self):
-        return AuthUserProfileSelectionTask(self.import_date)
+        return AuthUserProfileSelectionTask()
 
     def requires(self):
         for req in super(ImportAuthUserProfileTask, self).requires():
@@ -559,6 +559,9 @@ class ImportAuthUserProfileTask(DatabaseImportMixin, MysqlTableTask):
 
 class AuthUserProfileSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
+
+    def __init__(self, *args, **kwargs):
+        super(AuthUserProfileSelectionTask, self).__init__(*args, **kwargs)
 
     def complete(self):
         return self.completed
@@ -1132,6 +1135,9 @@ class EnrollmentByEducationLevelMysqlTask(
 class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
 
+    def __init__(self, *args, **kwargs):
+        super(PersistentCourseGradeDataSelectionTask, self).__init__(*args, **kwargs)
+
     def complete(self):
         return self.completed
         # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
@@ -1170,7 +1176,7 @@ class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportPersistentCourseGradeTask(DatabaseImportMixin, MysqlTableTask):
+class ImportPersistentCourseGradeTask(MysqlTableTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportPersistentCourseGradeTask, self).__init__(*args, **kwargs)
@@ -1208,7 +1214,7 @@ class ImportPersistentCourseGradeTask(DatabaseImportMixin, MysqlTableTask):
         ]
 
     def requires_local(self):
-        return PersistentCourseGradeDataSelectionTask(self.import_date)
+        return PersistentCourseGradeDataSelectionTask()
 
     def requires(self):
         for req in super(ImportPersistentCourseGradeTask, self).requires():

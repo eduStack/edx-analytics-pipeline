@@ -959,6 +959,9 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
 class CourseUserGroupSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
 
+    def __init__(self, *args, **kwargs):
+        super(CourseUserGroupSelectionTask, self).__init__(*args, **kwargs)
+
     def complete(self):
         return self.completed
         # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
@@ -991,7 +994,7 @@ class CourseUserGroupSelectionTask(DatabaseImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportCourseUserGroupTask(DatabaseImportMixin, MysqlTableTask):
+class ImportCourseUserGroupTask(MysqlTableTask):
     """
     Imports user demographic information from an external LMS DB to both a
     destination directory and a HIVE metastore.
@@ -1027,7 +1030,7 @@ class ImportCourseUserGroupTask(DatabaseImportMixin, MysqlTableTask):
         ]
 
     def requires_local(self):
-        return CourseUserGroupSelectionTask(self.import_date)
+        return CourseUserGroupSelectionTask()
 
     def requires(self):
         for req in super(ImportCourseUserGroupTask, self).requires():
@@ -1039,6 +1042,9 @@ class ImportCourseUserGroupTask(DatabaseImportMixin, MysqlTableTask):
 
 class CourseUserGroupUsersSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
+
+    def __init__(self, *args, **kwargs):
+        super(CourseUserGroupUsersSelectionTask, self).__init__(*args, **kwargs)
 
     def complete(self):
         return self.completed
@@ -1070,7 +1076,7 @@ class CourseUserGroupUsersSelectionTask(DatabaseImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportCourseUserGroupUsersTask(DatabaseImportMixin, MysqlTableTask):
+class ImportCourseUserGroupUsersTask(MysqlTableTask):
     """
     Imports user cohort information from an external LMS DB to both a
     destination directory and a HIVE metastore.
@@ -1098,7 +1104,7 @@ class ImportCourseUserGroupUsersTask(DatabaseImportMixin, MysqlTableTask):
         ]
 
     def requires_local(self):
-        return CourseUserGroupUsersSelectionTask(self.import_date)
+        return CourseUserGroupUsersSelectionTask()
 
     def requires(self):
         for req in super(ImportCourseUserGroupUsersTask, self).requires():

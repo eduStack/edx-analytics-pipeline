@@ -428,6 +428,9 @@ class LastCountryPerCourseRecord(Record):
 class AuthUserSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
 
+    def __init__(self, *args, **kwargs):
+        super(AuthUserSelectionTask, self).__init__(*args, **kwargs)
+
     def complete(self):
         return self.completed
         # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
@@ -464,7 +467,7 @@ class AuthUserSelectionTask(DatabaseImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportAuthUserTask(DatabaseImportMixin, MysqlTableTask):
+class ImportAuthUserTask(MysqlTableTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportAuthUserTask, self).__init__(*args, **kwargs)
@@ -498,7 +501,7 @@ class ImportAuthUserTask(DatabaseImportMixin, MysqlTableTask):
         ]
 
     def requires_local(self):
-        return AuthUserSelectionTask(self.import_date)
+        return AuthUserSelectionTask()
 
     def requires(self):
         for req in super(ImportAuthUserTask, self).requires():
@@ -508,6 +511,9 @@ class ImportAuthUserTask(DatabaseImportMixin, MysqlTableTask):
 
 class StudentCourseEnrollmentSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
+
+    def __init__(self, *args, **kwargs):
+        super(StudentCourseEnrollmentSelectionTask, self).__init__(*args, **kwargs)
 
     def complete(self):
         return self.completed
@@ -543,7 +549,7 @@ class StudentCourseEnrollmentSelectionTask(DatabaseImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportStudentCourseEnrollmentTask(DatabaseImportMixin, MysqlTableTask):
+class ImportStudentCourseEnrollmentTask(MysqlTableTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportStudentCourseEnrollmentTask, self).__init__(*args, **kwargs)
@@ -575,7 +581,7 @@ class ImportStudentCourseEnrollmentTask(DatabaseImportMixin, MysqlTableTask):
         ]
 
     def requires_local(self):
-        return StudentCourseEnrollmentSelectionTask(self.import_date)
+        return StudentCourseEnrollmentSelectionTask()
 
     def requires(self):
         for req in super(ImportStudentCourseEnrollmentTask, self).requires():

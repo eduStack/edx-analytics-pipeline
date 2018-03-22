@@ -22,6 +22,8 @@ from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin
 from edx.analytics.tasks.insights.database_imports import (
     DatabaseImportMixin
 )
+from edx.analytics.tasks.insights.hylenrollments import ImportAuthUserProfileTask
+from edx.analytics.tasks.insights.hyllocation_per_course import ImportAuthUserTask
 from edx.analytics.tasks.insights.enrollments import ExternalCourseEnrollmentPartitionTask
 from edx.analytics.tasks.util import eventlog
 from edx.analytics.tasks.util.decorators import workflow_entry_point
@@ -126,16 +128,18 @@ class ModuleEngagementRecord(Record):
 
 class ModuleEngagementRosterRecord(Record):
     """A summary of statistics related to a single learner in a single course related to their engagement."""
-    course_id = StringField(description='Course the learner is enrolled in.')
-    username = StringField(description='Learner\'s username.')
+    course_id = StringField(length=255, nullable=False, description='Course the learner is enrolled in.')
+    username = StringField(length=255, nullable=False, description='Learner\'s username.')
     start_date = DateField(description='Analysis includes all data from 00:00 on this day up to the end date.')
     end_date = DateField(description='Analysis includes all data up to but not including this date.')
-    email = StringField(description='Learner\'s email address.')
-    name = StringField(analyzed=True, description='Learner\'s full name including first, middle and last names. '
-                                                  'This field can be searched by instructors.')
-    enrollment_mode = StringField(description='Learner is enrolled in the course with this mode. Example: verified.')
+    email = StringField(length=255, nullable=False, description='Learner\'s email address.')
+    name = StringField(length=255, nullable=False, analyzed=True,
+                       description='Learner\'s full name including first, middle and last names. '
+                                   'This field can be searched by instructors.')
+    enrollment_mode = StringField(length=255, nullable=False,
+                                  description='Learner is enrolled in the course with this mode. Example: verified.')
     enrollment_date = DateField(description='First date the learner enrolled in the course.')
-    cohort = StringField(description='Cohort the learner belongs to, can be null.')
+    cohort = StringField(length=255, nullable=False, description='Cohort the learner belongs to, can be null.')
     problem_attempts = IntegerField(description='Number of times the learner attempted any problem in the course.')
     problems_attempted = IntegerField(description='Number of unique problems the learner has ever attempted in the'
                                                   ' course.')
@@ -166,15 +170,15 @@ class ModuleEngagementRosterRecord(Record):
     )
     # More user profile fields, appended after initial schema creation
     user_id = IntegerField(description='Learner\'s user ID.')
-    language = StringField(description='Learner\'s preferred language.')
-    location = StringField(description='Learner\'s reported location.')
+    language = StringField(length=255, nullable=False, description='Learner\'s preferred language.')
+    location = StringField(length=255, nullable=False, description='Learner\'s reported location.')
     year_of_birth = IntegerField(description='Learner\'s reported year of birth.')
-    level_of_education = StringField(description='Learner\'s reported level of education.')
-    gender = StringField(description='Learner\'s reported gender.')
-    mailing_address = StringField(description='Learner\'s reported mailing address.')
-    city = StringField(description='Learner\'s reported city.')
-    country = StringField(description='Learner\'s reported country.')
-    goals = StringField(description='Learner\'s reported goals.')
+    level_of_education = StringField(length=255, nullable=False, description='Learner\'s reported level of education.')
+    gender = StringField(length=255, nullable=False, description='Learner\'s reported gender.')
+    mailing_address = StringField(length=255, nullable=False, description='Learner\'s reported mailing address.')
+    city = StringField(length=255, nullable=False, description='Learner\'s reported city.')
+    country = StringField(length=255, nullable=False, description='Learner\'s reported country.')
+    goals = StringField(length=255, nullable=False, description='Learner\'s reported goals.')
 
 
 class ModuleEngagementSummaryMetricRangeRecord(Record):
@@ -1114,6 +1118,193 @@ class ImportCourseUserGroupUsersTask(MysqlTableTask):
             yield requires_local
 
 
+class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin, MysqlTableTask):
+    """
+    A Hive partition that represents the roster as of a particular day.
+
+    Note that data from the prior 2 weeks is used to generate the summary for a particular date.
+    """
+
+    date = luigi.DateParameter()
+    max_field_length = luigi.IntParameter(
+        description='If set, truncate any long strings from the auth_userprofile table to this maximum length. '
+                    ' This is required for ElasticSearch, which throws a MaxBytesLengthExceededException for any term '
+                    ' that is longer than its configured max length.',
+        default=20000,
+    )
+
+    interval = None
+    partition_value = None
+
+    def __init__(self, *args, **kwargs):
+        super(ModuleEngagementRosterPartitionTask, self).__init__(*args, **kwargs)
+
+    @property
+    def insert_query(self):
+        # The end of the interval is not closed, so use the prior day's enrollment data.
+        last_complete_date = self.interval.date_b - datetime.timedelta(days=1)  # pylint: disable=no-member
+
+        def strip_and_truncate(field):
+            """
+            Identify delimiters in the data and strip them out to prevent parsing errors.
+
+            Also, if self.max_field_length is set, then truncate the field to self.max_field_length.
+            """
+            stripped = "regexp_replace(regexp_replace({}, '\\\\t|\\\\n|\\\\r', ' '), '\\\\\\\\', '')".format(field)
+
+            if self.max_field_length is not None:
+                stripped = "substring({}, 1, {})".format(stripped, self.max_field_length)
+            return stripped
+
+        query = """
+        SELECT
+            ce.course_id,
+            au.username,
+            '{start}',
+            '{end}',
+            au.email,
+            {aup_name},
+            ce.mode,
+            lce.first_enrollment_date,
+            cohort.name,
+            COALESCE(eng.problem_attempts, 0),
+            COALESCE(eng.problems_attempted, 0),
+            COALESCE(eng.problems_completed, 0),
+            eng.problem_attempts_per_completed,
+            COALESCE(eng.videos_viewed, 0),
+            COALESCE(eng.discussion_contributions, 0),
+            CONCAT_WS(
+                ",",
+                IF(ce.at_end = 0, "unenrolled", NULL),
+                -- The learner has had no activity in the past 2 weeks.
+                IF(COALESCE(old_eng.days_active, 0) = 0 AND COALESCE(eng.days_active, 0) = 0, "inactive", NULL),
+                -- Two weeks ago the learner was active, however, they have had no activity in the most recent week.
+                IF(COALESCE(old_eng.days_active, 0) > 0 AND COALESCE(eng.days_active, 0) = 0, "disengaging", NULL),
+                seg.segments
+            ),
+            -- attempt_ratio_order
+            -- This field is a secondary sort key for the records in this table. Combined with a primary sort on
+            -- problem_attempts_per_completed it can be used to identify top performers or struggling learners. It
+            -- provides a magnitude for the degree to which a user is performing well or poorly. If, for example, they
+            -- have made 10 attempts and gotten 10 problems correct, we want to sort that learner as higher
+            -- performing than a user who has only made 1 attempt on one problem and was correct. Similarly, if a user
+            -- has made 10 attempts without getting any problems correct, we want to sort that learner as lower
+            -- performing than a user who has only made one attempt without getting the problem correct.
+
+            -- To see high performing learners sort by (problem_attempts_per_completed ASC, attempt_ratio_order DESC)
+            -- To see struggling learners sort by (problem_attempts_per_completed DESC, attempt_ratio_order ASC)
+            IF(
+                eng.problem_attempts_per_completed IS NULL,
+                -COALESCE(eng.problem_attempts, 0),
+                COALESCE(eng.problem_attempts, 0)
+            ),
+            aup.user_id,
+            {aup_language},
+            {aup_location},
+            aup.year_of_birth,
+            {aup_level_of_education},
+            {aup_gender},
+            {aup_mailing_address},
+            {aup_city},
+            {aup_country},
+            {aup_goals}
+        FROM course_enrollment ce
+        INNER JOIN auth_user au
+            ON (ce.user_id = au.id)
+        INNER JOIN auth_userprofile aup
+            ON (au.id = aup.user_id)
+        LEFT OUTER JOIN (
+            SELECT
+                cugu.user_id,
+                cug.course_id,
+                cug.name
+            FROM course_groups_courseusergroup_users cugu
+            INNER JOIN course_groups_courseusergroup cug
+                ON (cugu.courseusergroup_id = cug.id)
+        ) cohort
+            ON (au.id = cohort.user_id AND ce.course_id = cohort.course_id)
+        LEFT OUTER JOIN module_engagement_summary eng
+            ON (ce.course_id = eng.course_id AND au.username = eng.username AND eng.end_date = '{end}')
+        LEFT OUTER JOIN module_engagement_summary old_eng
+            ON (ce.course_id = old_eng.course_id AND au.username = old_eng.username AND old_eng.end_date = DATE_SUB('{end}', 7))
+        LEFT OUTER JOIN (
+            SELECT
+                course_id,
+                user_id,
+                MIN(`date`) AS first_enrollment_date
+            FROM course_enrollment
+            WHERE
+                at_end = 1 AND `date` < '{end}'
+            GROUP BY course_id, user_id
+        ) lce
+            ON (ce.course_id = lce.course_id AND ce.user_id = lce.user_id)
+        LEFT OUTER JOIN (
+            SELECT
+                course_id,
+                username,
+                CONCAT_WS(",", COLLECT_SET(segment)) AS segments
+            FROM module_engagement_user_segments
+            WHERE end_date = '{end}'
+            GROUP BY course_id, username
+        ) seg
+            ON (ce.course_id = seg.course_id AND au.username = seg.username)
+        WHERE
+            ce.`date` = '{last_complete_date}'
+        """.format(
+            start=self.interval.date_a.isoformat(),  # pylint: disable=no-member
+            end=self.interval.date_b.isoformat(),  # pylint: disable=no-member
+            last_complete_date=last_complete_date.isoformat(),
+            aup_name=strip_and_truncate('aup.name'),
+            aup_language=strip_and_truncate('aup.language'),
+            aup_location=strip_and_truncate('aup.location'),
+            aup_level_of_education=strip_and_truncate('aup.level_of_education'),
+            aup_gender=strip_and_truncate('aup.gender'),
+            aup_mailing_address=strip_and_truncate('aup.mailing_address'),
+            aup_city=strip_and_truncate('aup.city'),
+            aup_country=strip_and_truncate('aup.country'),
+            aup_goals=strip_and_truncate('aup.goals'),
+        )
+        return query
+
+    @property
+    def table(self):
+        return 'module_engagement_roster'
+
+    @property
+    def columns(self):
+        return ModuleEngagementRosterRecord.get_sql_schema()
+
+    def requires(self):
+        kwargs_for_db_import = {
+            'overwrite': self.overwrite,
+            'import_date': self.date
+        }
+        yield (
+            ModuleEngagementSummaryMetricRangesMysqlTask(
+                date=self.date,
+                overwrite_from_date=self.overwrite_from_date,
+            ),
+            ModuleEngagementUserSegmentTableTask(
+                date=self.date,
+                overwrite_from_date=self.overwrite_from_date,
+            ),
+            # ExternalCourseEnrollmentPartitionTask(
+            #     interval_end=self.date
+            # ),
+            # CourseEnrollmentTask(
+            #     overwrite_mysql=self.overwrite_mysql,
+            #     source=self.source,
+            #     interval=self.interval,
+            #     pattern=self.pattern,
+            #     overwrite_n_days=self.overwrite_n_days
+            # )
+            ImportAuthUserTask(),
+            ImportCourseUserGroupTask(),
+            ImportCourseUserGroupUsersTask(),
+            ImportAuthUserProfileTask(),
+        )
+
+
 NAMES = ['james', 'john', 'robert', 'william', 'michael', 'david', 'richard', 'charles', 'joseph', 'thomas',
          'mary', 'patricia', 'linda', 'barbara', 'elizabeth', 'jennifer', 'maria', 'susan', 'margaret', 'dorothy']
 SURNAMES = ['smith', 'johnson', 'williams', 'jones', 'brown', 'davis', 'miller', 'wilson', 'moore', 'taylor']
@@ -1209,17 +1400,13 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
         #     overwrite=self.overwrite,
         #     throttle=self.throttle
         # )
-        yield ModuleEngagementSummaryMetricRangesMysqlTask(
+        #
+        # yield ImportCourseUserGroupTask()
+        # yield ImportCourseUserGroupUsersTask()
+        yield ModuleEngagementRosterPartitionTask(
             date=self.date,
             overwrite_from_date=overwrite_from_date,
         )
-
-        yield ModuleEngagementUserSegmentTableTask(
-            date=self.date,
-            overwrite_from_date=overwrite_from_date,
-        )
-        yield ImportCourseUserGroupTask()
-        yield ImportCourseUserGroupUsersTask()
 
     def output(self):
         return [t.output() for t in self.requires()]

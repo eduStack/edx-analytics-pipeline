@@ -11,7 +11,7 @@ import tempfile
 import luigi
 import pandas as pd
 from luigi.hive import HiveQueryTask
-from edx.analytics.tasks.common.sqoop import SqoopImportMixin
+from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
 from edx.analytics.tasks.common.mysql_load import MysqlTableTask, get_mysql_query_results
 from edx.analytics.tasks.common.pathutil import (
@@ -425,7 +425,7 @@ class LastCountryPerCourseRecord(Record):
                                     description="Number ever enrolled in course whose current last-country code matches.")
 
 
-class AuthUserSelectionTask(SqoopImportMixin, luigi.Task):
+class AuthUserSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
 
     def complete(self):
@@ -464,7 +464,7 @@ class AuthUserSelectionTask(SqoopImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportAuthUserTask(MysqlTableTask):
+class ImportAuthUserTask(DatabaseImportMixin, MysqlTableTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportAuthUserTask, self).__init__(*args, **kwargs)
@@ -498,7 +498,7 @@ class ImportAuthUserTask(MysqlTableTask):
         ]
 
     def requires_local(self):
-        return AuthUserSelectionTask()
+        return AuthUserSelectionTask(self.import_date)
 
     def requires(self):
         for req in super(ImportAuthUserTask, self).requires():
@@ -506,7 +506,7 @@ class ImportAuthUserTask(MysqlTableTask):
         yield self.requires_local()
 
 
-class StudentCourseEnrollmentSelectionTask(SqoopImportMixin, luigi.Task):
+class StudentCourseEnrollmentSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
 
     def complete(self):
@@ -543,7 +543,7 @@ class StudentCourseEnrollmentSelectionTask(SqoopImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportStudentCourseEnrollmentTask(MysqlTableTask):
+class ImportStudentCourseEnrollmentTask(DatabaseImportMixin, MysqlTableTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportStudentCourseEnrollmentTask, self).__init__(*args, **kwargs)
@@ -575,7 +575,7 @@ class ImportStudentCourseEnrollmentTask(MysqlTableTask):
         ]
 
     def requires_local(self):
-        return StudentCourseEnrollmentSelectionTask()
+        return StudentCourseEnrollmentSelectionTask(self.import_date)
 
     def requires(self):
         for req in super(ImportStudentCourseEnrollmentTask, self).requires():

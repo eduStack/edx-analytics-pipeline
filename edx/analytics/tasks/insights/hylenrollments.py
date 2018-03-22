@@ -12,7 +12,7 @@ from edx.analytics.tasks.common.mysql_load import get_mysql_query_results, Mysql
 from edx.analytics.tasks.common.pathutil import (
     EventLogSelectionDownstreamMixin, EventLogSelectionMixin
 )
-from edx.analytics.tasks.common.sqoop import SqoopImportMixin
+from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
 from edx.analytics.tasks.util import eventlog, opaque_key_util
 from edx.analytics.tasks.util.decorators import workflow_entry_point
 from edx.analytics.tasks.util.record import BooleanField, DateField, IntegerField, Record, StringField, DateTimeField, \
@@ -513,7 +513,7 @@ class CourseGradeByModeRecord(Record):
     passing_users = IntegerField(nullable=True, description='The count of currently passing learners')
 
 
-class ImportAuthUserProfileTask(MysqlTableTask):
+class ImportAuthUserProfileTask(DatabaseImportMixin, MysqlTableTask):
     """
     Imports user demographic information from an external LMS DB to both a
     destination directory and a HIVE metastore.
@@ -547,7 +547,7 @@ class ImportAuthUserProfileTask(MysqlTableTask):
         ]
 
     def requires_local(self):
-        return AuthUserProfileSelectionTask()
+        return AuthUserProfileSelectionTask(self.import_date)
 
     def requires(self):
         for req in super(ImportAuthUserProfileTask, self).requires():
@@ -557,7 +557,7 @@ class ImportAuthUserProfileTask(MysqlTableTask):
             yield requires_local
 
 
-class AuthUserProfileSelectionTask(SqoopImportMixin, luigi.Task):
+class AuthUserProfileSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
 
     def complete(self):
@@ -1129,7 +1129,7 @@ class EnrollmentByEducationLevelMysqlTask(
         )
 
 
-class PersistentCourseGradeDataSelectionTask(SqoopImportMixin, luigi.Task):
+class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
 
     def complete(self):
@@ -1170,7 +1170,7 @@ class PersistentCourseGradeDataSelectionTask(SqoopImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportPersistentCourseGradeTask(MysqlTableTask):
+class ImportPersistentCourseGradeTask(DatabaseImportMixin, MysqlTableTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportPersistentCourseGradeTask, self).__init__(*args, **kwargs)
@@ -1208,7 +1208,7 @@ class ImportPersistentCourseGradeTask(MysqlTableTask):
         ]
 
     def requires_local(self):
-        return PersistentCourseGradeDataSelectionTask()
+        return PersistentCourseGradeDataSelectionTask(self.import_date)
 
     def requires(self):
         for req in super(ImportPersistentCourseGradeTask, self).requires():

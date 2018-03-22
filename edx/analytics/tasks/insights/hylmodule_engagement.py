@@ -20,7 +20,7 @@ from edx.analytics.tasks.common.mysql_load import IncrementalMysqlTableInsertTas
     get_mysql_query_results
 from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
 from edx.analytics.tasks.insights.database_imports import (
-    ImportAuthUserProfileTask, ImportAuthUserTask, ImportCourseUserGroupTask, ImportCourseUserGroupUsersTask
+    DatabaseImportMixin
 )
 from edx.analytics.tasks.insights.enrollments import ExternalCourseEnrollmentPartitionTask
 from edx.analytics.tasks.util import eventlog
@@ -28,7 +28,7 @@ from edx.analytics.tasks.util.decorators import workflow_entry_point
 from edx.analytics.tasks.util.hive import BareHiveTableTask, HivePartitionTask, WarehouseMixin, hive_database_name
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.util.record import DateField, FloatField, IntegerField, Record, StringField
-from edx.analytics.tasks.util.url import get_target_from_url, url_path_join
+from edx.analytics.tasks.util.url import ExternalURL, get_target_from_url, url_path_join
 
 try:
     import numpy
@@ -880,7 +880,8 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
             records = [ModuleEngagementSummaryRecord(course_id=course_id, username=username, start_date=line[0],
                                                      end_date=line[1], problem_attempts=line[2],
                                                      problems_attempted=line[6], problems_completed=line[4],
-                                                     problem_attempts_per_completed=line[5] if line[5] else float('inf'),
+                                                     problem_attempts_per_completed=line[5] if line[5] else float(
+                                                         'inf'),
                                                      videos_viewed=line[6], discussion_contributions=line[7],
                                                      days_active=line[8]) for line in values]
 
@@ -953,6 +954,158 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
                                                                     high_value=row[6] if row[6] else float('inf'))
             if range_record.range_type == METRIC_RANGE_HIGH:
                 self.high_metric_ranges[range_record.course_id][range_record.metric] = range_record
+
+
+class CourseUserGroupSelectionTask(DatabaseImportMixin, luigi.Task):
+    completed = False
+
+    def complete(self):
+        return self.completed
+        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        query = """
+            SELECT
+                    `id`,
+                    `name`,
+                    `course_id`,
+                    `group_type`
+            FROM course_groups_courseusergroup
+            """
+        return query
+
+    def output(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        for row in query_result:
+            yield row
+
+    def run(self):
+        log.info('CourseUserGroupSelectionTask running')
+        if not self.completed:
+            self.completed = True
+
+    def requires(self):
+        yield ExternalURL(url=self.credentials)
+
+
+class ImportCourseUserGroupTask(DatabaseImportMixin, MysqlTableTask):
+    """
+    Imports user demographic information from an external LMS DB to both a
+    destination directory and a HIVE metastore.
+
+    """
+
+    def __init__(self, *args, **kwargs):
+        super(ImportCourseUserGroupTask, self).__init__(*args, **kwargs)
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'course_groups_courseusergroup'
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
+
+    @property
+    def columns(self):
+        return [
+            ('courseusergroup_id', 'INT(11)'),
+            ('name', 'VARCHAR(255)'),
+            ('course_id', 'VARCHAR(255)'),
+            ('group_type', 'VARCHAR(255)'),
+        ]
+
+    @property
+    def indexes(self):
+        return [
+            ('courseusergroup_id',),
+        ]
+
+    def requires_local(self):
+        return CourseUserGroupSelectionTask(self.import_date)
+
+    def requires(self):
+        for req in super(ImportCourseUserGroupTask, self).requires():
+            yield req
+        requires_local = self.requires_local()
+        if isinstance(requires_local, luigi.Task):
+            yield requires_local
+
+
+class CourseUserGroupUsersSelectionTask(DatabaseImportMixin, luigi.Task):
+    completed = False
+
+    def complete(self):
+        return self.completed
+        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        query = """
+            SELECT
+                    courseusergroup_id,
+                    user_id
+            FROM course_groups_courseusergroup_users
+            """
+        return query
+
+    def output(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        for row in query_result:
+            yield row
+
+    def run(self):
+        log.info('CourseUserGroupUsersSelectionTask running')
+        if not self.completed:
+            self.completed = True
+
+    def requires(self):
+        yield ExternalURL(url=self.credentials)
+
+
+class ImportCourseUserGroupUsersTask(DatabaseImportMixin, MysqlTableTask):
+    """
+    Imports user cohort information from an external LMS DB to both a
+    destination directory and a HIVE metastore.
+
+    """
+
+    def __init__(self, *args, **kwargs):
+        super(ImportCourseUserGroupUsersTask, self).__init__(*args, **kwargs)
+
+    @property
+    def table(self):  # pragma: no cover
+        return 'course_groups_courseusergroup_users'
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
+
+    @property
+    def columns(self):
+        return [
+            ('courseusergroup_id', 'INT(11)'),
+            ('user_id', 'INT(11)'),
+        ]
+
+    def requires_local(self):
+        return CourseUserGroupUsersSelectionTask(self.import_date)
+
+    def requires(self):
+        for req in super(ImportCourseUserGroupUsersTask, self).requires():
+            yield req
+        requires_local = self.requires_local()
+        if isinstance(requires_local, luigi.Task):
+            yield requires_local
 
 
 NAMES = ['james', 'john', 'robert', 'william', 'michael', 'david', 'richard', 'charles', 'joseph', 'thomas',
@@ -1059,6 +1212,8 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
             date=self.date,
             overwrite_from_date=overwrite_from_date,
         )
+        yield ImportCourseUserGroupTask()
+        yield ImportCourseUserGroupUsersTask()
 
     def output(self):
         return [t.output() for t in self.requires()]

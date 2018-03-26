@@ -11,6 +11,8 @@ import tempfile
 import luigi
 import pandas as pd
 from luigi.hive import HiveQueryTask
+
+from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask
 from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
 from edx.analytics.tasks.common.mysql_load import MysqlTableTask, get_mysql_query_results
@@ -425,19 +427,9 @@ class LastCountryPerCourseRecord(Record):
                                     description="Number ever enrolled in course whose current last-country code matches.")
 
 
-class AuthUserSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(AuthUserSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
+class AuthUserSelectionTask(LoadDataFromDatabaseTask):
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
                 SELECT 
                     username,
@@ -450,21 +442,6 @@ class AuthUserSelectionTask(DatabaseImportMixin, luigi.Task):
                 FROM auth_user
             """
         return query
-
-    def output(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('AuthUserSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportAuthUserTask(MysqlTableTask):
@@ -509,19 +486,9 @@ class ImportAuthUserTask(MysqlTableTask):
         yield self.requires_local()
 
 
-class StudentCourseEnrollmentSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(StudentCourseEnrollmentSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
+class StudentCourseEnrollmentSelectionTask(LoadDataFromDatabaseTask):
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
                 SELECT 
                     user_id,
@@ -532,21 +499,6 @@ class StudentCourseEnrollmentSelectionTask(DatabaseImportMixin, luigi.Task):
                 FROM student_courseenrollment
             """
         return query
-
-    def output(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('StudentCourseEnrollmentSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportStudentCourseEnrollmentTask(MysqlTableTask):

@@ -23,6 +23,7 @@ from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin
 from edx.analytics.tasks.insights.database_imports import (
     DatabaseImportMixin
 )
+from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask
 from edx.analytics.tasks.insights.hylenrollments import ImportAuthUserProfileTask
 from edx.analytics.tasks.insights.hyllocation_per_course import ImportAuthUserTask
 from edx.analytics.tasks.insights.enrollments import ExternalCourseEnrollmentPartitionTask
@@ -897,19 +898,9 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
                 self.high_metric_ranges[range_record.course_id][range_record.metric] = range_record
 
 
-class CourseUserGroupSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(CourseUserGroupSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
+class CourseUserGroupSelectionTask(LoadDataFromDatabaseTask):
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
             SELECT
                     `id`,
@@ -919,20 +910,6 @@ class CourseUserGroupSelectionTask(DatabaseImportMixin, luigi.Task):
             FROM course_groups_courseusergroup
             """
         return query
-
-    def output(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('CourseUserGroupSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportCourseUserGroupTask(MysqlTableTask):
@@ -981,19 +958,9 @@ class ImportCourseUserGroupTask(MysqlTableTask):
             yield requires_local
 
 
-class CourseUserGroupUsersSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(CourseUserGroupUsersSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
+class CourseUserGroupUsersSelectionTask(LoadDataFromDatabaseTask):
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
             SELECT
                     courseusergroup_id,
@@ -1001,20 +968,6 @@ class CourseUserGroupUsersSelectionTask(DatabaseImportMixin, luigi.Task):
             FROM course_groups_courseusergroup_users
             """
         return query
-
-    def output(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('CourseUserGroupUsersSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportCourseUserGroupUsersTask(MysqlTableTask):

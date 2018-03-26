@@ -587,6 +587,7 @@ class AuthUserProfileSelectionTask(DatabaseImportMixin, UniversalDataTask):
         return query
 
     def load_data(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
         query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
                                                query=self.insert_query)
         return query_result

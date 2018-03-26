@@ -293,12 +293,13 @@ class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownst
         ]
 
     def requires(self):
+        overwrite_interval = None
         if self.overwrite_n_days > 0:
             overwrite_from_date = self.end_date - datetime.timedelta(days=self.overwrite_n_days)
             overwrite_interval = luigi.date_interval.Custom(overwrite_from_date, self.end_date)
         yield (
             UserActivityTableTask(
-                interval=overwrite_interval,
+                interval=self.interval if overwrite_interval is None else overwrite_interval,
                 overwrite=True,
             ),
             MysqlCalendarTableTask()

@@ -21,6 +21,7 @@ from edx.analytics.tasks.util.url import ExternalURL
 from edx.analytics.tasks.warehouse.load_internal_reporting_course_catalog import (
     LoadInternalReportingCourseCatalogMixin, CourseRecord
 )
+from edx.analytics.tasks.util.data import UniversalDataTask
 
 log = logging.getLogger(__name__)
 DEACTIVATED = 'edx.course.enrollment.deactivated'
@@ -557,11 +558,48 @@ class ImportAuthUserProfileTask(MysqlTableTask):
             yield requires_local
 
 
-class AuthUserProfileSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
+class AuthUserProfileSelectionTask(DatabaseImportMixin, UniversalDataTask):
 
     def __init__(self, *args, **kwargs):
         super(AuthUserProfileSelectionTask, self).__init__(*args, **kwargs)
+
+    def processing(self, data):
+        return super(AuthUserProfileSelectionTask, self).processing(data)
+
+    @property
+    def insert_query(self):
+        """The query builder that controls the structure and fields inserted into the new table."""
+        query = """
+                  SELECT 
+                      user_id,
+                      `name`,
+                      gender,
+                      year_of_birth,
+                      level_of_education,
+                      `language`,
+                      location,
+                      mailing_address,
+                      city,
+                      country,
+                      goals
+                  FROM auth_userprofile
+              """
+        return query
+
+    def load_data(self):
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        return query_result
+
+    def requires(self):
+        yield ExternalURL(url=self.credentials)
+
+
+class AuthUserProfileSelectionTask1(DatabaseImportMixin, luigi.Task):
+    completed = False
+
+    def __init__(self, *args, **kwargs):
+        super(AuthUserProfileSelectionTask1, self).__init__(*args, **kwargs)
 
     def complete(self):
         return self.completed

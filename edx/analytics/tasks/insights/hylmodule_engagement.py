@@ -458,7 +458,7 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
                         continue
                     raw_events.extend(events)
         columns = ['record_without_count', 'count']
-        log.info('raw_events = {}'.format(raw_events))
+        # log.info('raw_events = {}'.format(raw_events))
         if len(raw_events) == 0:
             log.warn('raw_events is empty!')
             pass
@@ -502,7 +502,7 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
 
 class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysqlTableInsertTask):
     """The hive table for this engagement data."""
-    allow_empty_insert = False
+    allow_empty_insert = True
 
     @property
     def table(self):
@@ -531,15 +531,13 @@ class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysq
         yield self.requires_local()
 
 
-class ModuleEngagementIntervalTask(ModuleEngagementDownstreamMixin, WeekIntervalMixin, luigi.Task):
+class ModuleEngagementIntervalTask(ModuleEngagementDownstreamMixin, WeekIntervalMixin, luigi.WrapperTask):
     """Compute engagement information over a range of dates and insert the results into Hive and MySQL"""
 
     overwrite_mysql = luigi.BooleanParameter(
         default=True,
         significant=False
     )
-
-    completed = False
 
     def requires(self):
         log.info('self.interval = {}'.format(self.interval))
@@ -566,65 +564,9 @@ class ModuleEngagementIntervalTask(ModuleEngagementDownstreamMixin, WeekInterval
                 if isinstance(data_task, ModuleEngagementDataTask):
                     yield data_task
 
-    def complete(self):
-        return self.completed
-
     def run(self):
         log.info('ModuleEngagementIntervalTask running')
-        if not self.completed:
-            self.completed = True
 
-
-#
-#
-# class ModuleEngagementSummaryDataTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin, OverwriteOutputMixin,
-#                                       luigi.Task):
-#     completed = False
-#
-#     def complete(self):
-#         return self.completed
-#
-#     def output(self):
-#         require = self.requires_local()
-#         if require:
-#             for task in require.get_raw_data_tasks():
-#                 for raw_events in task.output():
-#                     columns = ['course_id', 'username', 'date', 'entity_type', 'entity_id', 'action', 'count']
-#                     log.info('raw_events = {}'.format(raw_events))
-#                     if len(raw_events) == 0:
-#                         log.warn('raw_events is empty!')
-#                         pass
-#                     else:
-#                         df = pd.DataFrame(data=raw_events, columns=columns)
-#
-#                         for (course_id, username), group in df.groupby(['course_id', 'username']):
-#                             values = group[['date', 'entity_type', 'entity_id', 'action', 'count']].get_values()
-#                             output_record_builder = ModuleEngagementSummaryRecordBuilder()
-#                             for line in values:
-#                                 record = ModuleEngagementRecord(course_id=course_id, username=username, date=line[0],
-#                                                                 entity_type=line[1], entity_id=line[2],
-#                                                                 event=line[3], count=line[4])
-#                                 output_record_builder.add_record(record)
-#
-#                                 yield output_record_builder.get_summary_record(course_id, username,
-#                                                                                self.interval).to_string_tuple()
-#
-#     def run(self):
-#         log.info('ModuleEngagementSummaryDataTask running')
-#         if not self.completed:
-#             self.completed = True
-#
-#     def requires(self):
-#         for req in super(ModuleEngagementSummaryDataTask, self).requires():
-#             yield req
-#         yield self.requires_local()
-#
-#     def requires_local(self):
-#         return ModuleEngagementIntervalTask(
-#             date=self.date,
-#             overwrite_from_date=self.overwrite_from_date,
-#         )
-#
 
 class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownstreamMixin, MysqlTableTask):
     """The hive table for this summary of engagement data."""
@@ -672,7 +614,7 @@ class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownst
                                                query=self.insert_query)
 
         columns = ['course_id', 'username', 'date', 'entity_type', 'entity_id', 'action', 'count']
-        log.info('raw_events = {}'.format(query_result))
+        # log.info('raw_events = {}'.format(query_result))
         df = pd.DataFrame(data=query_result, columns=columns)
 
         for (course_id, username), group in df.groupby(['course_id', 'username']):
@@ -685,13 +627,6 @@ class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownst
                 output_record_builder.add_record(record)
 
             yield output_record_builder.get_summary_record(course_id, username, self.interval).to_string_tuple()
-        # for row in query_result:
-        #     record = ModuleEngagementRecord(course_id=row[0], username=row[1], date=row[2],
-        #                                     entity_type=row[3], entity_id=row[4],
-        #                                     event=row[5], count=row[6])
-        #     output_record_builder.add_record(record)
-        #
-        # yield output_record_builder.get_summary_record(row[0], row[1], self.interval).to_string_tuple()
 
 
 class ModuleEngagementSummaryMetricRangesMysqlTask(ModuleEngagementDownstreamMixin, MysqlTableTask):
@@ -750,7 +685,7 @@ class ModuleEngagementSummaryMetricRangesMysqlTask(ModuleEngagementDownstreamMix
                    'problems_completed', 'problem_attempts_per_completed', 'videos_viewed',
                    'discussion_contributions', ' days_active']
 
-        log.info('raw_events = {}'.format(query_result))
+        # log.info('raw_events = {}'.format(query_result))
         df = pd.DataFrame(data=query_result, columns=columns)
 
         for course_id, group in df.groupby(['course_id']):
@@ -875,7 +810,7 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
                    'problems_completed', 'problem_attempts_per_completed', 'videos_viewed',
                    'discussion_contributions', ' days_active']
 
-        log.info('raw_events = {}'.format(query_result))
+        # log.info('raw_events = {}'.format(query_result))
         df = pd.DataFrame(data=query_result, columns=columns)
 
         for (course_id, username), group in df.groupby(['course_id', 'username']):

@@ -191,7 +191,6 @@ class ElasticsearchIndexTaskMixin(OverwriteOutputMixin):
         first_batch = True
         while True:
             bulk_action_batch = self.next_bulk_action_batch(document_iterator)
-            log.info('bulk_action_batch = {}'.format(bulk_action_batch))
             if not bulk_action_batch:
                 break
 

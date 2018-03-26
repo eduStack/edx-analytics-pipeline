@@ -14,7 +14,8 @@ import luigi.task
 import pandas as pd
 from luigi import date_interval
 
-from edx.analytics.tasks.common.elasticsearch_load import ElasticsearchIndexTask
+from analytics.tasks.util.elasticsearch_target import ElasticsearchTarget
+from edx.analytics.tasks.common.elasticsearch_load import ElasticsearchIndexTask, ElasticsearchIndexTaskMixin
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin
 from edx.analytics.tasks.common.mysql_load import IncrementalMysqlTableInsertTask, MysqlTableTask, \
     get_mysql_query_results
@@ -152,11 +153,12 @@ class ModuleEngagementRosterRecord(Record):
                                              ' course.')
     discussion_contributions = IntegerField(description='Total number of posts, responses and comments the learner has'
                                                         ' made in the course.')
-    segments = StringField(length=255, nullable=False, analyzed=True, description='Classifiers that help group learners by analyzing their activity'
-                                                      ' patterns. Example: "inactive" indicates the user has not'
-                                                      ' engaged with the course recently. This field is analyzed by'
-                                                      ' elasticsearch so that searches can be made for learners that'
-                                                      ' either have or don\'t have particular classifiers.')
+    segments = StringField(length=255, nullable=False, analyzed=True,
+                           description='Classifiers that help group learners by analyzing their activity'
+                                       ' patterns. Example: "inactive" indicates the user has not'
+                                       ' engaged with the course recently. This field is analyzed by'
+                                       ' elasticsearch so that searches can be made for learners that'
+                                       ' either have or don\'t have particular classifiers.')
     attempt_ratio_order = IntegerField(
         description='Used to sort learners by problem_attempts_per_completed in a meaningful way. When using'
                     ' problem_attempts_per_completed as your primary sort key, you can secondary sort by'
@@ -1164,9 +1166,9 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
             '{end}',
             au.email,
             {aup_name},
-            ce.mode,
+            ce.`mode`,
             lce.first_enrollment_date,
-            cohort.name,
+            cohort.`name`,
             COALESCE(eng.problem_attempts, 0),
             COALESCE(eng.problems_attempted, 0),
             COALESCE(eng.problems_completed, 0),
@@ -1220,7 +1222,7 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
                 cug.name
             FROM course_groups_courseusergroup_users cugu
             INNER JOIN course_groups_courseusergroup cug
-                ON (cugu.courseusergroup_id = cug.id)
+                ON (cugu.courseusergroup_id = cug.courseusergroup_id)
         ) cohort
             ON (au.id = cohort.user_id AND ce.course_id = cohort.course_id)
         LEFT OUTER JOIN module_engagement_summary eng
@@ -1254,7 +1256,7 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
             start=self.interval.date_a.isoformat(),  # pylint: disable=no-member
             end=self.interval.date_b.isoformat(),  # pylint: disable=no-member
             last_complete_date=last_complete_date.isoformat(),
-            aup_name=strip_and_truncate('aup.name'),
+            aup_name=strip_and_truncate('aup.`name`'),
             aup_language=strip_and_truncate('aup.`language`'),
             aup_location=strip_and_truncate('aup.location'),
             aup_level_of_education=strip_and_truncate('aup.level_of_education'),
@@ -1303,6 +1305,180 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
             ImportCourseUserGroupUsersTask(),
             ImportAuthUserProfileTask(),
         )
+
+
+class ModuleEngagementRosterIndexTask(ElasticsearchIndexTaskMixin, ModuleEngagementDownstreamMixin,
+                                      ModuleEngagementRosterIndexDownstreamMixin, luigi.Task):
+    """Load the roster data into elasticsearch for rapid query."""
+
+    alias = luigi.Parameter(
+        config_path={'section': 'module-engagement', 'name': 'alias'},
+        description=ElasticsearchIndexTask.alias.description
+    )
+    number_of_shards = luigi.Parameter(
+        config_path={'section': 'module-engagement', 'name': 'number_of_shards'},
+        description=ElasticsearchIndexTask.number_of_shards.description
+    )
+    database = luigi.Parameter(
+        config_path={'section': 'database-export', 'name': 'database'},
+        description='The name of the database to which to write.',
+    )
+    credentials = luigi.Parameter(
+        config_path={'section': 'database-export', 'name': 'credentials'},
+        description='Path to the external access credentials file.',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super(ModuleEngagementRosterIndexTask, self).__init__(*args, **kwargs)
+        self.index = self.alias + '_' + str(hash(self.update_id()))
+        self.other_reduce_tasks = self.n_reduce_tasks
+        if self.indexing_tasks is not None:
+            self.n_reduce_tasks = self.indexing_tasks
+
+    def requires_local(self):
+        return ModuleEngagementRosterPartitionTask(
+            date=self.date,
+            overwrite_from_date=self.overwrite_from_date,
+        )
+
+    def update_id(self):
+        """A unique identifier for this task instance that is used to determine if it should be run again."""
+        return self.task_id
+
+    @property
+    def properties(self):
+        """Generate the elasticsearch mapping from the record schema."""
+        return ModuleEngagementRosterRecord.get_elasticsearch_properties()
+
+    def output(self):
+        return ElasticsearchTarget(
+            client=self.create_elasticsearch_client(),
+            index=self.alias,
+            doc_type=self.doc_type,
+            update_id=self.update_id()
+        )
+
+    @property
+    def doc_type(self):
+        return 'roster_entry'
+
+    def insert_data_to_es(self):
+        query = """
+        SELECT 
+            course_id, 
+            username, 
+            start_date, 
+            end_date, 
+            email, 
+            `name`, 
+            enrollment_mode, 
+            enrollment_date, 
+            cohort, 
+            problem_attempts, 
+            problems_attempted, 
+            problems_completed, 
+            problem_attempts_per_completed, 
+            videos_viewed, 
+            discussion_contributions, 
+            segments, 
+            attempt_ratio_order, 
+            user_id, 
+            `language`, 
+            location, 
+            year_of_birth, 
+            level_of_education, 
+            gender, 
+            mailing_address, 
+            city, 
+            country, 
+            goals
+        FROM module_engagement_roster
+        """
+        res = get_mysql_query_results(self.credentials, self.database, query)
+        lines = []
+        for row in res:
+            record = ModuleEngagementRosterRecord(course_id=row[0],
+                                                  username=row[1],
+                                                  start_date=row[2],
+                                                  end_date=row[3],
+                                                  email=row[4],
+                                                  name=row[5],
+                                                  enrollment_mode=row[6],
+                                                  enrollment_date=row[7],
+                                                  cohort=row[8],
+                                                  problem_attempts=row[9],
+                                                  problems_attempted=row[10],
+                                                  problems_completed=row[11],
+                                                  problem_attempts_per_completed=row[12],
+                                                  videos_viewed=row[13],
+                                                  discussion_contributions=row[14],
+                                                  segments=row[15],
+                                                  attempt_ratio_order=row[16],
+                                                  user_id=row[17],
+                                                  language=row[18],
+                                                  location=row[19],
+                                                  year_of_birth=row[20],
+                                                  level_of_education=row[21],
+                                                  gender=row[22],
+                                                  mailing_address=row[23],
+                                                  city=row[24],
+                                                  country=row[25],
+                                                  goals=row[26])
+            lines.append(record)
+        self.update_index(lines)
+
+    def document_generator(self, lines):
+        for record in lines:
+            # record = ModuleEngagementRosterRecord.from_tsv(line)
+            if self.obfuscate:
+                email = '{0}@example.com'.format(record.username)
+                name = ' '.join([x.capitalize() for x in [random.choice(NAMES), random.choice(SURNAMES)]])
+            else:
+                email = record.email
+                name = record.name
+
+            document = {
+                '_id': '|'.join([record.course_id, record.username]),
+                '_source': {
+                    'name': name,
+                    'email': email
+                }
+            }
+
+            for maybe_null_field in ModuleEngagementRosterRecord.get_fields():
+                if maybe_null_field in ('name', 'email'):
+                    continue
+                maybe_null_value = getattr(record, maybe_null_field)
+                if maybe_null_value is not None and maybe_null_value != float('inf'):
+                    if maybe_null_field == 'segments':
+                        maybe_null_value = maybe_null_value.split(',')
+                    document['_source'][maybe_null_field] = maybe_null_value
+
+            original_id = document['_id']
+            for i in range(self.scale_factor):
+                if i > 0:
+                    document = document.copy()
+                    document['_id'] = original_id + '|' + str(i)
+                yield document
+
+    def requires(self):
+        for req in super(ModuleEngagementRosterIndexTask, self).requires():
+            yield req
+        yield ExternalURL(url=self.credentials)
+        yield self.requires_local()
+
+    def run(self):
+        try:
+            super(ModuleEngagementRosterIndexTask, self).run()
+            self.init_es_client()
+            self.insert_data_to_es()
+        except Exception:  # pylint: disable=broad-except
+            self.rollback()
+            raise
+        else:
+            self.commit()
+            # Update the luigi metadata to indicate that the task ran successfully.
+            self.output().touch()
 
 
 NAMES = ['james', 'john', 'robert', 'william', 'michael', 'david', 'richard', 'charles', 'joseph', 'thomas',
@@ -1403,7 +1579,11 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
         #
         # yield ImportCourseUserGroupTask()
         # yield ImportCourseUserGroupUsersTask()
-        yield ModuleEngagementRosterPartitionTask(
+        # yield ModuleEngagementRosterPartitionTask(
+        #     date=self.date,
+        #     overwrite_from_date=overwrite_from_date,
+        # )
+        yield ModuleEngagementRosterIndexTask(
             date=self.date,
             overwrite_from_date=overwrite_from_date,
         )

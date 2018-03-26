@@ -14,7 +14,7 @@ import luigi.task
 import pandas as pd
 from luigi import date_interval
 
-from analytics.tasks.util.elasticsearch_target import ElasticsearchTarget
+from edx.analytics.tasks.util.elasticsearch_target import ElasticsearchTarget
 from edx.analytics.tasks.common.elasticsearch_load import ElasticsearchIndexTask, ElasticsearchIndexTaskMixin
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin
 from edx.analytics.tasks.common.mysql_load import IncrementalMysqlTableInsertTask, MysqlTableTask, \
@@ -1307,8 +1307,8 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
         )
 
 
-class ModuleEngagementRosterIndexTask(ElasticsearchIndexTaskMixin, ModuleEngagementDownstreamMixin,
-                                      ModuleEngagementRosterIndexDownstreamMixin, luigi.Task):
+class ModuleEngagementRosterIndexTask(luigi.Task, ElasticsearchIndexTaskMixin, ModuleEngagementDownstreamMixin,
+                                      ModuleEngagementRosterIndexDownstreamMixin):
     """Load the roster data into elasticsearch for rapid query."""
 
     alias = luigi.Parameter(
@@ -1327,13 +1327,12 @@ class ModuleEngagementRosterIndexTask(ElasticsearchIndexTaskMixin, ModuleEngagem
         config_path={'section': 'database-export', 'name': 'credentials'},
         description='Path to the external access credentials file.',
     )
+    index = alias
 
     def __init__(self, *args, **kwargs):
         super(ModuleEngagementRosterIndexTask, self).__init__(*args, **kwargs)
-        self.index = self.alias + '_' + str(hash(self.update_id()))
-        self.other_reduce_tasks = self.n_reduce_tasks
-        if self.indexing_tasks is not None:
-            self.n_reduce_tasks = self.indexing_tasks
+        self.batch_index = 0
+        self.indexes_for_alias = set()
 
     def requires_local(self):
         return ModuleEngagementRosterPartitionTask(
@@ -1469,6 +1468,7 @@ class ModuleEngagementRosterIndexTask(ElasticsearchIndexTaskMixin, ModuleEngagem
 
     def run(self):
         try:
+            self.index = self.alias + '_' + str(hash(self.update_id()))
             super(ModuleEngagementRosterIndexTask, self).run()
             self.init_es_client()
             self.insert_data_to_es()
@@ -1585,7 +1585,7 @@ class HylModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEng
         # )
         yield ModuleEngagementRosterIndexTask(
             date=self.date,
-            overwrite_from_date=overwrite_from_date,
+            overwrite_from_date=overwrite_from_date
         )
 
     def output(self):

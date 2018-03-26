@@ -595,51 +595,6 @@ class AuthUserProfileSelectionTask(DatabaseImportMixin, UniversalDataTask):
         yield ExternalURL(url=self.credentials)
 
 
-class AuthUserProfileSelectionTask1(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(AuthUserProfileSelectionTask1, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
-    @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
-        query = """
-                SELECT 
-                    user_id,
-                    `name`,
-                    gender,
-                    year_of_birth,
-                    level_of_education,
-                    `language`,
-                    location,
-                    mailing_address,
-                    city,
-                    country,
-                    goals
-                FROM auth_userprofile
-            """
-        return query
-
-    def output(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('AuthUserProfileSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
-
-
 class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
     """
     Task to extract enrollment events from eventlogs over a given interval.
@@ -1170,15 +1125,16 @@ class EnrollmentByEducationLevelMysqlTask(
         )
 
 
-class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
+class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, UniversalDataTask):
 
     def __init__(self, *args, **kwargs):
         super(PersistentCourseGradeDataSelectionTask, self).__init__(*args, **kwargs)
 
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+    def load_data(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        return query_result
 
     @property
     def insert_query(self):
@@ -1197,18 +1153,6 @@ class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, luigi.Task):
                     FROM grades_persistentcoursegrade
                 """
         return query
-
-    def output(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('PersistentCourseGradeDataSelectionTask running')
-        if not self.completed:
-            self.completed = True
 
     def requires(self):
         yield ExternalURL(url=self.credentials)

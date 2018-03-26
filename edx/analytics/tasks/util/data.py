@@ -1,4 +1,8 @@
 import luigi
+import logging
+import traceback
+
+log = logging.getLogger(__name__)
 
 
 class UniversalDataTask(luigi.Task):
@@ -16,15 +20,18 @@ class UniversalDataTask(luigi.Task):
 
     def run(self):
         data = self.load_data()
+        log.info('load {} data succ'.format(len(data)))
         try:
-            self.completed = self.processing(data)
+            log.info('data processing......')
+            self.result = self.processing(data)
+            self.completed = True
+            log.info('{} data process completed'.format(len(data)))
             # self.output()
         except Exception, e:
-            print e
+            log.error('Porcesing data error:{}'.format(traceback.format_exc()))
 
     def processing(self, data):
-        self.result = data
-        return True
+        return data
 
     def load_data(self):
         return []

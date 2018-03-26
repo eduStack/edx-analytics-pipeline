@@ -2,15 +2,17 @@ import luigi
 import logging
 import traceback
 
+from edx.analytics.tasks.common.mysql_load import get_mysql_query_results
+
+from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
+from edx.analytics.tasks.util.url import ExternalURL
+
 log = logging.getLogger(__name__)
 
 
 class UniversalDataTask(luigi.Task):
     result = []
     completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(UniversalDataTask, self).__init__(*args, **kwargs)
 
     def output(self):
         return self.result
@@ -35,3 +37,20 @@ class UniversalDataTask(luigi.Task):
 
     def load_data(self):
         return []
+
+
+class LoadDataFromDatabaseTask(DatabaseImportMixin, UniversalDataTask):
+
+    def load_data(self):
+        log.info('query_sql = [{}]'.format(self.query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.query)
+        return query_result
+
+    @property
+    def query(self):
+        """The query builder that controls the structure and fields loaded"""
+        raise NotImplementedError
+
+    def requires(self):
+        yield ExternalURL(url=self.credentials)

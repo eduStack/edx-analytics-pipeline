@@ -21,7 +21,7 @@ from edx.analytics.tasks.util.url import ExternalURL
 from edx.analytics.tasks.warehouse.load_internal_reporting_course_catalog import (
     LoadInternalReportingCourseCatalogMixin, CourseRecord
 )
-from edx.analytics.tasks.util.data import UniversalDataTask
+from edx.analytics.tasks.util.data import UniversalDataTask, LoadDataFromDatabaseTask
 
 log = logging.getLogger(__name__)
 DEACTIVATED = 'edx.course.enrollment.deactivated'
@@ -558,17 +558,10 @@ class ImportAuthUserProfileTask(MysqlTableTask):
             yield requires_local
 
 
-class AuthUserProfileSelectionTask(DatabaseImportMixin, UniversalDataTask):
-
-    def __init__(self, *args, **kwargs):
-        super(AuthUserProfileSelectionTask, self).__init__(*args, **kwargs)
-
-    def processing(self, data):
-        return super(AuthUserProfileSelectionTask, self).processing(data)
+class AuthUserProfileSelectionTask(LoadDataFromDatabaseTask):
 
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
                   SELECT 
                       user_id,
@@ -585,15 +578,6 @@ class AuthUserProfileSelectionTask(DatabaseImportMixin, UniversalDataTask):
                   FROM auth_userprofile
               """
         return query
-
-    def load_data(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        return query_result
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
@@ -1126,19 +1110,10 @@ class EnrollmentByEducationLevelMysqlTask(
         )
 
 
-class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, UniversalDataTask):
-
-    def __init__(self, *args, **kwargs):
-        super(PersistentCourseGradeDataSelectionTask, self).__init__(*args, **kwargs)
-
-    def load_data(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        return query_result
+class PersistentCourseGradeDataSelectionTask(LoadDataFromDatabaseTask):
 
     @property
-    def insert_query(self):
+    def query(self):
         """The query builder that controls the structure and fields inserted into the new table."""
         query = """
                     SELECT 
@@ -1154,9 +1129,6 @@ class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, UniversalDataT
                     FROM grades_persistentcoursegrade
                 """
         return query
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportPersistentCourseGradeTask(MysqlTableTask):

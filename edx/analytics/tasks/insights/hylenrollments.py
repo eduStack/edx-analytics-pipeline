@@ -21,7 +21,7 @@ from edx.analytics.tasks.util.url import ExternalURL
 from edx.analytics.tasks.warehouse.load_internal_reporting_course_catalog import (
     LoadInternalReportingCourseCatalogMixin, CourseRecord
 )
-from edx.analytics.tasks.util.data import UniversalDataTask, LoadDataFromDatabaseTask
+from edx.analytics.tasks.util.data import UniversalDataTask, LoadDataFromDatabaseTask, LoadEventFromLocalFileTask
 
 log = logging.getLogger(__name__)
 DEACTIVATED = 'edx.course.enrollment.deactivated'
@@ -580,7 +580,86 @@ class AuthUserProfileSelectionTask(LoadDataFromDatabaseTask):
         return query
 
 
-class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
+class CourseEnrollmentEventsTask(LoadEventFromLocalFileTask):
+    """
+    Task to extract enrollment events from eventlogs over a given interval.
+    This would produce a different output file for each day within the interval
+    containing that day's enrollment events only.
+    """
+    counter_category_name = 'Enrollment Events'
+
+    def get_event_row_from_line(self, line):
+        value = self.get_event_and_date_string(line)
+        if value is None:
+            return
+        event, date_string = value
+        self.incr_counter(self.counter_category_name, 'Inputs with Dates', 1)
+
+        event_type = event.get('event_type')
+        if event_type is None:
+            log.error("encountered event with no event_type: %s", event)
+            self.incr_counter(self.counter_category_name, 'Discard Missing Event Type', 1)
+            return
+
+        if event_type not in (DEACTIVATED, ACTIVATED, MODE_CHANGED):
+            self.incr_counter(self.counter_category_name, 'Discard Non-Enrollment Event Type', 1)
+            return
+
+        timestamp = eventlog.get_event_time_string(event)
+        if timestamp is None:
+            log.error("encountered event with bad timestamp: %s", event)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Timestamp', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+            return
+
+        event_data = eventlog.get_event_data(event)
+        if event_data is None:
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Event Data', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+            return
+
+        course_id = opaque_key_util.normalize_course_id(event_data.get('course_id'))
+        if course_id is None or not opaque_key_util.is_valid_course_id(course_id):
+            log.error("encountered explicit enrollment event with invalid course_id: %s", event)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing course_id', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+            return
+
+        user_id = event_data.get('user_id')
+        if user_id is None:
+            log.error("encountered explicit enrollment event with no user_id: %s", event)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing user_id', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+            return
+
+        mode = event_data.get('mode')
+        if mode is None:
+            log.error("encountered explicit enrollment event with no mode: %s", event)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing mode', 1)
+            self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+            return
+
+        self.incr_counter(self.counter_category_name, 'Output From Mapper', 1)
+        # reformat data for aggregation
+        return date_string, (course_id.encode('utf8'), user_id), timestamp, event_type, mode
+
+    def processing(self, data):
+        columns = ['date_string', 'course_id+user_id', 'timestamp', 'event_type', 'mode']
+        df = pd.DataFrame(data=data, columns=columns)
+
+        increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name,
+                                                                   1)
+
+        for (date_string, (course_id, user_id)), group in df.groupby(['date_string', 'course_id+user_id']):
+            values = group[['timestamp', 'event_type', 'mode']].get_values()
+
+            event_stream_processor = DaysEnrolledForEvents(course_id, user_id, self.interval, values,
+                                                           increment_counter)
+            for day_enrolled_record in event_stream_processor.days_enrolled():
+                yield day_enrolled_record
+
+
+class CourseEnrollmentEventsTask1(EventLogSelectionMixin, luigi.Task):
     """
     Task to extract enrollment events from eventlogs over a given interval.
     This would produce a different output file for each day within the interval
@@ -599,7 +678,7 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
     _counter_dict = {}
 
     def __init__(self, *args, **kwargs):
-        super(CourseEnrollmentEventsTask, self).__init__(*args, **kwargs)
+        super(CourseEnrollmentEventsTask1, self).__init__(*args, **kwargs)
 
     def get_event_row_from_line(self, line):
         value = self.get_event_and_date_string(line)
@@ -737,12 +816,12 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
 
     def run(self):
         self.init_local()
-        super(CourseEnrollmentEventsTask, self).run()
+        super(CourseEnrollmentEventsTask1, self).run()
         if not self.completed:
             self.completed = True
 
     def requires(self):
-        requires = super(CourseEnrollmentEventsTask, self).requires()
+        requires = super(CourseEnrollmentEventsTask1, self).requires()
         if isinstance(requires, luigi.Task):
             yield requires
 

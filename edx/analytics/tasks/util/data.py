@@ -22,22 +22,33 @@ class UniversalDataTask(luigi.Task):
         return self.result
 
     def complete(self):
-        return len(self.result) > 0 or self.completed
+        if isinstance(self.result, list):
+            return len(self.result) > 0 or self.completed
+        else:
+            # generator
+            return self.completed
 
     def run(self):
         self.init_env()
         data = self.load_data()
         length = 0
         if data:
-            length = len(data)
-        log.info('load {} data succ'.format(length))
+            if isinstance(data, list):
+                length = len(data)
+                log.info('load {} data succ'.format(length))
+            else:
+                log.info('load data generator succ')
+        else:
+            log.info('load empty data')
+
         try:
             log.info('data processing......')
             if length > 0:
                 self.result = self.processing(data)
                 log.info('{} data process completed'.format(length))
+            else:
+                log.info('No data need to process')
             self.completed = True
-            log.info('No data need to process')
             # self.output()
         except Exception, e:
             log.error('Processing data error:{}'.format(traceback.format_exc()))

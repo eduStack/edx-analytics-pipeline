@@ -9,6 +9,8 @@ import traceback
 import os
 import pymongo
 import luigi.configuration
+from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin
+
 from edx.analytics.tasks.util.decorators import workflow_entry_point
 
 from edx.analytics.tasks.util import eventlog
@@ -70,11 +72,14 @@ class MongoTask(MongoTaskMixin, UniversalDataTask):
     db = None
 
     def requires(self):
-        yield ExternalURL(url=self.credentials)
+        yield self.credential_task()
+
+    def credential_task(self):
+        return ExternalURL(url=self.credentials)
 
     def init_env(self):
         # init conn
-        credentials_target = self.input()
+        credentials_target = self.credential_task().output()
         cred = None
         with credentials_target.open('r') as credentials_file:
             cred = json.load(credentials_file)
@@ -103,9 +108,9 @@ class LoadRawEventFromMongoTask(MongoTask):
         return self.db.find(self.event_filter)
 
 
-class LogFileImportMixin(object):
+class LogFileImportMixin(EventLogSelectionDownstreamMixin):
     log_path = luigi.Parameter(
-        default='/tmp/tracking',
+        default=['/tmp/tracking'],
         config_path={'section': 'mongo', 'name': 'log_path'},
         description='Path to log file imported to mongo.'
     )
@@ -113,9 +118,20 @@ class LogFileImportMixin(object):
         default='/tmp/processed',
         config_path={'section': 'mongo', 'name': 'processed_path'}
     )
+    # disable interval
+    source = None
+    interval = None
+    expand_interval = None
+    pattern = None
+    date_pattern = None
+
+    def init_env(self):
+        # disable interval init
+        pass
 
 
-class LoadEventFromLogFileWithoutIntervalTask(LogFileImportMixin, LoadEventFromLocalFileTask):
+class LoadEventFromLogFileWithoutIntervalTask(LoadEventFromLocalFileTask, LogFileImportMixin):
+
     # TODO make sure log_path and processed_path exist
 
     def requires(self):
@@ -135,7 +151,7 @@ class LoadEventFromLogFileWithoutIntervalTask(LogFileImportMixin, LoadEventFromL
     def output(self):
         # before output we need remove processed files
         for log_file in luigi.task.flatten(self.input()):
-            log_file.move(self.processed_path)
+            log_file.remove()
         return super(LoadEventFromLogFileWithoutIntervalTask, self).output()
 
     def get_log_file_paths(self):
@@ -143,6 +159,7 @@ class LoadEventFromLogFileWithoutIntervalTask(LogFileImportMixin, LoadEventFromL
             for directory_path, _subdir_paths, filenames in os.walk(source):
                 for filename in filenames:
                     yield os.path.join(directory_path, filename)
+
 
 @workflow_entry_point
 class LoadEventToMongoTask(MongoTask):

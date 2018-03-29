@@ -44,8 +44,8 @@ class UniversalDataTask(luigi.Task):
 
         try:
             log.info('data processing......')
+            self.result = self.processing(data)
             if length > 0:
-                self.result = self.processing(data)
                 log.info('{} data process completed'.format(length))
             else:
                 log.info('No data need to process')
@@ -194,6 +194,7 @@ class LoadEventFromLocalFileTask(LoadEventTask):
 class LoadEventFromMongoTask(LoadEventTask):
     lower_bound_date_timestamp = None
     upper_bound_date_timestamp = None
+    load_task = None
 
     def __init__(self, *args, **kwargs):
         super(LoadEventFromMongoTask, self).__init__(*args, **kwargs)
@@ -210,23 +211,22 @@ class LoadEventFromMongoTask(LoadEventTask):
         return document
 
     def load_raw_events(self):
-        event_iter = self.input()
-        return event_iter
-
-    def requires(self):
-        yield self.mongo_load_task()
-
-    def mongo_load_task(self):
-        from edx.analytics.tasks.common.mongo import LoadRawEventFromMongoTask
-        return LoadRawEventFromMongoTask(event_filter=self.event_filter())
-
-    def processing(self, event_iter):
+        event_iter = self.mongo_load_task().output()
         raw_event = []
         for event in event_iter:
             row = self.get_event_row_from_document(event)
             if row:
                 raw_event.append(row)
         return raw_event
+
+    def requires(self):
+        yield self.mongo_load_task()
+
+    def mongo_load_task(self):
+        from edx.analytics.tasks.common.mongo import LoadRawEventFromMongoTask
+        if not self.load_task:
+            self.load_task = LoadRawEventFromMongoTask(event_filter=self.event_filter())
+        return self.load_task
 
     def event_filter(self):
         # return {

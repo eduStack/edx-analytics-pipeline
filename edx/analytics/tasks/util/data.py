@@ -1,4 +1,5 @@
 import gzip
+import json
 
 from datetime import datetime
 import luigi
@@ -223,7 +224,8 @@ class LoadEventFromMongoTask(LoadEventTask):
 
     def mongo_load_task(self):
         from edx.analytics.tasks.common.mongo import LoadRawEventFromMongoTask
-        return LoadRawEventFromMongoTask(filter_id=hash(self.event_filter()), event_filter=self.event_filter())
+        filter_obj = json.dumps(self.event_filter())
+        return LoadRawEventFromMongoTask(event_filter=filter_obj)
 
     def event_filter(self):
         # return {

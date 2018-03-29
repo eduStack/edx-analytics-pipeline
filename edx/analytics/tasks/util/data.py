@@ -195,6 +195,10 @@ class LoadEventFromMongoTask(LoadEventTask):
     lower_bound_date_timestamp = None
     upper_bound_date_timestamp = None
 
+    def __init__(self, *args, **kwargs):
+        super(LoadEventFromMongoTask, self).__init__(*args, **kwargs)
+        self.init_env()
+
     def init_env(self):
         super(LoadEventFromMongoTask, self).init_env()
         date_a = self.interval.date_a.toordinal()
@@ -214,7 +218,7 @@ class LoadEventFromMongoTask(LoadEventTask):
 
     def mongo_load_task(self):
         from edx.analytics.tasks.common.mongo import LoadRawEventFromMongoTask
-        return LoadRawEventFromMongoTask(filter=self.event_filter())
+        return LoadRawEventFromMongoTask(event_filter=self.event_filter())
 
     def processing(self, event_iter):
         raw_event = []

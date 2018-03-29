@@ -105,7 +105,11 @@ class LoadRawEventFromMongoTask(MongoTask):
     def load_data(self):
         log.info('LoadRawEventFromMongoTask load_data running')
         log.info('event_filter = {}'.format(self.event_filter))
-        return self.collection.find(self.event_filter)
+        events = []
+        result = self.collection.find(self.event_filter)
+        for event in result:
+            events.append(event)
+        return events
 
 
 class LogFileImportMixin(EventLogSelectionDownstreamMixin):

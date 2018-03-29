@@ -224,8 +224,8 @@ class LoadEventFromMongoTask(LoadEventTask):
 
     def mongo_load_task(self):
         from edx.analytics.tasks.common.mongo import LoadRawEventFromMongoTask
-        filter_obj = json.dumps(self.event_filter())
-        return LoadRawEventFromMongoTask(event_filter=filter_obj)
+        filter_id = hash('{}'.format(self.event_filter()))
+        return LoadRawEventFromMongoTask(filter_id=filter_id, event_filter=self.event_filter())
 
     def event_filter(self):
         # return {

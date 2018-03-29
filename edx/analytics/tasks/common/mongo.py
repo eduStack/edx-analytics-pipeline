@@ -100,14 +100,13 @@ class MongoTask(MongoTaskMixin, UniversalDataTask):
 
 
 class LoadRawEventFromMongoTask(MongoTask):
-    event_filter = luigi.Parameter()
+    filter_id = luigi.Parameter()
+    event_filter = luigi.Parameter(significant=False)
 
     def load_data(self):
         log.info('LoadRawEventFromMongoTask load_data running')
         log.info('event_filter = {}'.format(self.event_filter))
-        filter_obj = json.loads(self.event_filter)
-        return self.collection.find(filter_obj)
-
+        return self.collection.find(self.event_filter)
 
 
 class LogFileImportMixin(EventLogSelectionDownstreamMixin):

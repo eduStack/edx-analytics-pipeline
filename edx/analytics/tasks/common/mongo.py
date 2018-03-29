@@ -100,8 +100,8 @@ class MongoTask(MongoTaskMixin, UniversalDataTask):
 
 
 class LoadRawEventFromMongoTask(MongoTask):
-    event_filter = luigi.Parameter()
-
+    event_filter = luigi.Parameter(significant=False)
+    filter_id = luigi.Parameter()
     def load_data(self):
         log.info('LoadRawEventFromMongoTask load_data running')
         log.info('event_filter = {}'.format(self.event_filter))

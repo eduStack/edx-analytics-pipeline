@@ -110,13 +110,10 @@ class LoadRawEventFromMongoTask(MongoTask):
 
 class LogFileImportMixin(EventLogSelectionDownstreamMixin):
     log_path = luigi.Parameter(
+        is_list=True,
         default=['/tmp/tracking'],
         config_path={'section': 'mongo', 'name': 'log_path'},
         description='Path to log file imported to mongo.'
-    )
-    processed_path = luigi.Parameter(
-        default='/tmp/processed',
-        config_path={'section': 'mongo', 'name': 'processed_path'}
     )
     # disable interval
     source = None

@@ -194,7 +194,6 @@ class LoadEventFromLocalFileTask(LoadEventTask):
 class LoadEventFromMongoTask(LoadEventTask):
     lower_bound_date_timestamp = None
     upper_bound_date_timestamp = None
-    load_task = None
 
     def __init__(self, *args, **kwargs):
         super(LoadEventFromMongoTask, self).__init__(*args, **kwargs)
@@ -224,9 +223,7 @@ class LoadEventFromMongoTask(LoadEventTask):
 
     def mongo_load_task(self):
         from edx.analytics.tasks.common.mongo import LoadRawEventFromMongoTask
-        if not self.load_task:
-            self.load_task = LoadRawEventFromMongoTask(event_filter=self.event_filter())
-        return self.load_task
+        return LoadRawEventFromMongoTask(event_filter=self.event_filter())
 
     def event_filter(self):
         # return {

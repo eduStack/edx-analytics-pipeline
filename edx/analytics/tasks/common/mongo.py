@@ -1,14 +1,20 @@
 """
 Support for loading data into a Mysql database.
 """
+import gzip
 import json
 import logging
 import traceback
 
+import os
 import pymongo
 import luigi.configuration
-from edx.analytics.tasks.util.data import UniversalDataTask
-from edx.analytics.tasks.util.url import ExternalURL
+from edx.analytics.tasks.util.decorators import workflow_entry_point
+
+from edx.analytics.tasks.util import eventlog
+
+from edx.analytics.tasks.util.data import UniversalDataTask, LoadEventFromLocalFileTask
+from edx.analytics.tasks.util.url import ExternalURL, url_path_join
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +44,7 @@ class MongoConn(Singleton):
             log.error('Connect to Mongo error: {}'.format(traceback.format_exc()))
 
 
-class MongoLoadTaskMixin(object):
+class MongoTaskMixin(object):
     """
     Parameters for inserting a data set into RDBMS.
 
@@ -57,15 +63,9 @@ class MongoLoadTaskMixin(object):
         significant=False,
         description='The number of rows to insert at a time.',
     )
-    log_path = luigi.Parameter(
-        default='/tmp/tracking',
-        config_path={'section': 'mongo', 'name': 'log_path'},
-        description='Path to log file imported to mongo.'
-    )
 
 
-class LoadRawEventFromMongoTask(MongoLoadTaskMixin, UniversalDataTask):
-    event_filter = luigi.Parameter(significant=False)
+class MongoTask(MongoTaskMixin, UniversalDataTask):
     connection = None
     db = None
 
@@ -89,21 +89,75 @@ class LoadRawEventFromMongoTask(MongoLoadTaskMixin, UniversalDataTask):
         self.check_mongo_availability()
         self.db = connection.db[self.database]
 
+    def check_mongo_availability(self):
+        if not self.connection.connected:
+            raise ImportError('mongo client not available')
+
+
+class LoadRawEventFromMongoTask(MongoTask):
+    event_filter = luigi.Parameter(significant=False)
+
     def load_data(self):
         log.info('LoadRawEventFromMongoTask load_data running')
         log.info('event_filter = {}'.format(self.event_filter))
         return self.db.find(self.event_filter)
 
-    # @property
-    # def indexes(self):
-    #     """List of tuples defining the names of the columns to include in each index."""
-    #     return []
-    #
-    # @property
-    # def keys(self):
-    #     """List of tuples defining other keys to include in the table definition."""
-    #     return []
 
-    def check_mongo_availability(self):
-        if not self.connection.connected:
-            raise ImportError('mongo client not available')
+class LogFileImportMixin(object):
+    log_path = luigi.Parameter(
+        default='/tmp/tracking',
+        config_path={'section': 'mongo', 'name': 'log_path'},
+        description='Path to log file imported to mongo.'
+    )
+    processed_path = luigi.Parameter(
+        default='/tmp/processed',
+        config_path={'section': 'mongo', 'name': 'processed_path'}
+    )
+
+
+class LoadEventFromLogFileWithoutIntervalTask(LogFileImportMixin, LoadEventFromLocalFileTask):
+    # TODO make sure log_path and processed_path exist
+
+    def requires(self):
+        # do not invoke parent class method
+        yield [ExternalURL(url) for url in self.get_log_file_paths()]
+
+    def get_raw_events_from_log_file(self, input_file):
+        # override parent class to disable event filter
+        raw_events = []
+        for line in input_file:
+            event_row = eventlog.parse_json_event(line)
+            if not event_row:
+                continue
+            raw_events.append(event_row)
+        return raw_events
+
+    def output(self):
+        # before output we need remove processed files
+        for log_file in luigi.task.flatten(self.input()):
+            log_file.move(self.processed_path)
+        return super(LoadEventFromLogFileWithoutIntervalTask, self).output()
+
+    def get_log_file_paths(self):
+        for source in self.log_path:
+            for directory_path, _subdir_paths, filenames in os.walk(source):
+                for filename in filenames:
+                    yield os.path.join(directory_path, filename)
+
+@workflow_entry_point
+class LoadEventToMongoTask(MongoTask):
+
+    def load_data(self):
+        return self.log_file_selection_task().output()
+
+    def processing(self, data):
+        self.db.insert_many(data)
+        return data
+
+    def log_file_selection_task(self):
+        return LoadEventFromLogFileWithoutIntervalTask()
+
+    def requires(self):
+        for req in super(LoadEventToMongoTask, self).requires():
+            yield req
+        yield self.log_file_selection_task()

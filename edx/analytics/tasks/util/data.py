@@ -1,5 +1,6 @@
 import gzip
 
+from datetime import datetime
 import luigi
 import logging
 import traceback
@@ -191,6 +192,15 @@ class LoadEventFromLocalFileTask(LoadEventTask):
 
 
 class LoadEventFromMongoTask(LoadEventTask):
+    lower_bound_date_timestamp = None
+    upper_bound_date_timestamp = None
+
+    def init_env(self):
+        super(LoadEventFromMongoTask, self).init_env()
+        date_a = self.interval.date_a.toordinal()
+        date_b = self.interval.date_b.toordinal()
+        self.lower_bound_date_timestamp = datetime.fromordinal(date_a)
+        self.upper_bound_date_timestamp = datetime.fromordinal(date_b)
 
     def parse_event_from_entity(self, document):
         return document
@@ -215,6 +225,11 @@ class LoadEventFromMongoTask(LoadEventTask):
         return raw_event
 
     def event_filter(self):
+        # return {
+        #     '$and': [
+        #         {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
+        #         {'timestamp': {'$gte': self.lower_bound_date_timestamp}}
+        #     ]}
         raise NotImplementedError
 
     def get_event_row_from_document(self, document):
@@ -229,7 +244,12 @@ class LoadEventFromMongoTask(LoadEventTask):
 #     """
 #
 #     def event_filter(self):
-#         return {'event_type':{'$in':[DEACTIVATED,ACTIVATED,MODE_CHANGED]}}
+#         return {
+#             '$and': [
+#                 {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
+#                 {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
+#                 {'event_type': {'$in': [DEACTIVATED, ACTIVATED, MODE_CHANGED]}}
+#             ]}
 #
 #     def get_event_row_from_document(self, document):
 #         value = self.get_event_and_date_string(document)

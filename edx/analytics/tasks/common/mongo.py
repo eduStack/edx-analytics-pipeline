@@ -69,7 +69,7 @@ class MongoTaskMixin(object):
 
 class MongoTask(MongoTaskMixin, UniversalDataTask):
     connection = None
-    db = None
+    collection = None
 
     def requires(self):
         yield self.credential_task()
@@ -92,7 +92,7 @@ class MongoTask(MongoTaskMixin, UniversalDataTask):
         self.connection = connection
         # check
         self.check_mongo_availability()
-        self.db = connection.db[self.database]
+        self.collection = connection.db[self.database]
 
     def check_mongo_availability(self):
         if not self.connection.connected:
@@ -105,7 +105,7 @@ class LoadRawEventFromMongoTask(MongoTask):
     def load_data(self):
         log.info('LoadRawEventFromMongoTask load_data running')
         log.info('event_filter = {}'.format(self.event_filter))
-        return self.db.find(self.event_filter)
+        return self.collection.find(self.event_filter)
 
 
 class LogFileImportMixin(EventLogSelectionDownstreamMixin):
@@ -172,7 +172,7 @@ class LoadEventToMongoTask(MongoTask):
         return self.log_file_selection_task().output()
 
     def processing(self, data):
-        self.db.insert_many(data)
+        self.collection.insert_many(data)
         return data
 
     def log_file_selection_task(self):

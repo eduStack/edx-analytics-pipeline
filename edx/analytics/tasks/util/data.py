@@ -5,7 +5,6 @@ import logging
 import traceback
 
 from edx.analytics.tasks.common.mysql_load import get_mysql_query_results
-from edx.analytics.tasks.common.mongo import LoadRawEventFromMongoTask
 
 from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
 from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
@@ -204,6 +203,7 @@ class LoadEventFromMongoTask(LoadEventTask):
         yield self.mongo_load_task()
 
     def mongo_load_task(self):
+        from edx.analytics.tasks.common.mongo import LoadRawEventFromMongoTask
         return LoadRawEventFromMongoTask(filter=self.event_filter())
 
     def processing(self, event_iter):

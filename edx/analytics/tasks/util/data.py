@@ -5,6 +5,7 @@ import logging
 import traceback
 
 from edx.analytics.tasks.common.mysql_load import get_mysql_query_results
+from edx.analytics.tasks.common.mongo import LoadRawEventFromMongoTask
 
 from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
 from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
@@ -190,10 +191,98 @@ class LoadEventFromLocalFileTask(LoadEventTask):
         return NotImplementedError
 
 
-class LoadEventFromMongo(LoadEventTask):
+class LoadEventFromMongoTask(LoadEventTask):
 
     def parse_event_from_entity(self, document):
         return document
 
     def load_raw_events(self):
-        return []
+        event_iter = self.input()
+        return event_iter
+
+    def requires(self):
+        yield self.mongo_load_task()
+
+    def mongo_load_task(self):
+        return LoadRawEventFromMongoTask(filter=self.event_filter())
+
+    def processing(self, event_iter):
+        raw_event = []
+        for event in event_iter:
+            row = self.get_event_row_from_document(event)
+            if row:
+                raw_event.append(row)
+        return raw_event
+
+    def event_filter(self):
+        raise NotImplementedError
+
+    def get_event_row_from_document(self, document):
+        return NotImplementedError
+
+#
+# class CourseEnrollmentEventsTask(LoadEventFromMongoTask):
+#     """
+#     Task to extract enrollment events from eventlogs over a given interval.
+#     This would produce a different output file for each day within the interval
+#     containing that day's enrollment events only.
+#     """
+#
+#     def event_filter(self):
+#         return {}
+#
+#     def get_event_row_from_document(self, document):
+#         value = self.get_event_and_date_string(document)
+#         if value is None:
+#             return
+#         event, date_string = value
+#
+#         self.incr_counter(self.counter_category_name, 'Inputs with Dates', 1)
+#
+#         event_type = event.get('event_type')
+#         if event_type is None:
+#             log.error("encountered event with no event_type: %s", event)
+#             self.incr_counter(self.counter_category_name, 'Discard Missing Event Type', 1)
+#             return
+#
+#         if event_type not in (DEACTIVATED, ACTIVATED, MODE_CHANGED):
+#             self.incr_counter(self.counter_category_name, 'Discard Non-Enrollment Event Type', 1)
+#             return
+#
+#         timestamp = eventlog.get_event_time_string(event)
+#         if timestamp is None:
+#             log.error("encountered event with bad timestamp: %s", event)
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Timestamp', 1)
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+#             return
+#
+#         event_data = eventlog.get_event_data(event)
+#         if event_data is None:
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Event Data', 1)
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+#             return
+#
+#         course_id = opaque_key_util.normalize_course_id(event_data.get('course_id'))
+#         if course_id is None or not opaque_key_util.is_valid_course_id(course_id):
+#             log.error("encountered explicit enrollment event with invalid course_id: %s", event)
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing course_id', 1)
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+#             return
+#
+#         user_id = event_data.get('user_id')
+#         if user_id is None:
+#             log.error("encountered explicit enrollment event with no user_id: %s", event)
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing user_id', 1)
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+#             return
+#
+#         mode = event_data.get('mode')
+#         if mode is None:
+#             log.error("encountered explicit enrollment event with no mode: %s", event)
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing mode', 1)
+#             self.incr_counter(self.counter_category_name, 'Discard Enroll Missing Something', 1)
+#             return
+#
+#         self.incr_counter(self.counter_category_name, 'Output From Mapper', 1)
+#         # reformat data for aggregation
+#         return date_string, (course_id.encode('utf8'), user_id), timestamp, event_type, mode

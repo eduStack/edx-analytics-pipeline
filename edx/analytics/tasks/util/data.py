@@ -229,7 +229,7 @@ class LoadEventFromMongoTask(LoadEventTask):
 #     """
 #
 #     def event_filter(self):
-#         return {}
+#         return {'event_type':{'$in':[DEACTIVATED,ACTIVATED,MODE_CHANGED]}}
 #
 #     def get_event_row_from_document(self, document):
 #         value = self.get_event_and_date_string(document)

@@ -125,12 +125,11 @@ class LogFileImportMixin(EventLogSelectionDownstreamMixin):
     pattern = None
     date_pattern = None
 
-    def init_env(self):
-        # disable interval init
-        pass
-
 
 class LoadEventFromLogFileWithoutIntervalTask(LoadEventFromLocalFileTask, LogFileImportMixin):
+
+    def init_env(self):
+        pass
 
     # TODO make sure log_path and processed_path exist
 
@@ -142,9 +141,14 @@ class LoadEventFromLogFileWithoutIntervalTask(LoadEventFromLocalFileTask, LogFil
         # override parent class to disable event filter
         raw_events = []
         for line in input_file:
+
             event_row = eventlog.parse_json_event(line)
             if not event_row:
                 continue
+            timestamp = eventlog.get_event_time(event_row)
+            if not timestamp:
+                continue
+            event_row['timestamp'] = timestamp
             raw_events.append(event_row)
         return raw_events
 

@@ -103,7 +103,7 @@ class UserActivityTask(OverwriteOutputMixin, LoadEventFromMongoTask):
                 {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
                 {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
                 {'$or': [
-                    {'event_source': {'$ne': 'task'}},
+                    {'event_source': {'$not': {'$eq': 'task'}}},
                     {'event_type': {'$not': re.compile('^edx\.course\.enrollment\.')}},
                     {'$and': [
                         {'event_source': 'server'},

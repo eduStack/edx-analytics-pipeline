@@ -9,6 +9,7 @@ import luigi
 import luigi.date_interval
 
 import edx.analytics.tasks.util.eventlog as eventlog
+from edx.analytics.tasks.util.data import LoadEventFromMongoTask
 from edx.analytics.tasks.common.mysql_load import get_mysql_query_results, IncrementalMysqlTableInsertTask
 from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
 from edx.analytics.tasks.insights.calendar_task import MysqlCalendarTableTask
@@ -24,20 +25,19 @@ PLAY_VIDEO_LABEL = "PLAYED_VIDEO"
 POST_FORUM_LABEL = "POSTED_FORUM"
 
 
-class UserActivityTask(OverwriteOutputMixin, EventLogSelectionMixin, luigi.Task):
+class UserActivityTask(OverwriteOutputMixin, LoadEventFromMongoTask):
     """
-    Categorize activity of users.
+      Categorize activity of users.
 
-    Analyze the history of user actions and categorize their activity. Note that categories are not mutually exclusive.
-    A single event may belong to multiple categories. For example, we define a generic "ACTIVE" category that refers
-    to any event that has a course_id associated with it, but is not an enrollment event. Other events, such as a
-    video play event, will also belong to other categories.
+      Analyze the history of user actions and categorize their activity. Note that categories are not mutually exclusive.
+      A single event may belong to multiple categories. For example, we define a generic "ACTIVE" category that refers
+      to any event that has a course_id associated with it, but is not an enrollment event. Other events, such as a
+      video play event, will also belong to other categories.
 
-    The output from this job is a table that represents the number of events seen for each user in each course in each
-    category on each day.
+      The output from this job is a table that represents the number of events seen for each user in each course in each
+      category on each day.
 
-    """
-    completed = False
+      """
 
     def get_predicate_labels(self, event):
         """Creates labels by applying hardcoded predicates to a single event."""
@@ -92,67 +92,170 @@ class UserActivityTask(OverwriteOutputMixin, EventLogSelectionMixin, luigi.Task)
         else:
             return values[0].encode('utf8')
 
-    def get_raw_events_from_log_file(self, input_file):
-        raw_events = []
-        for line in input_file:
-            event_row = self.get_event_and_date_string(line)
-            if not event_row:
-                continue
-            event, date_string = event_row
+    def event_filter(self):
+        return {
+            '$and': [
+                {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
+                {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
+            ]}
+        # {'event_type': {'$in': ['problem_check', 'play_video']}}
 
-            username = event.get('username', '').strip()
-            if not username:
-                continue
+    def get_event_row_from_document(self, document):
+        event_and_date_string = self.get_event_and_date_string(document)
+        if not event_and_date_string:
+            return
+        event, date_string = event_and_date_string
 
-            course_id = eventlog.get_course_id(event)
-            if not course_id:
-                continue
+        username = event.get('username', '').strip()
+        if not username:
+            return
 
-            for label in self.get_predicate_labels(event):
-                event_row = self._encode_tuple((course_id, username, date_string, label))
-                raw_events.append(event_row)
-        return raw_events
+        course_id = eventlog.get_course_id(event)
+        if not course_id:
+            return
 
-    def output(self):
-        raw_events = []
-        for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as temp_file:
-                with gzip.GzipFile(fileobj=temp_file) as input_file:
-                    log.info('reading log file={}'.format(input_file))
-                    events = self.get_raw_events_from_log_file(input_file)
-                    if not events:
-                        continue
-                    raw_events.extend(events)
-        # (date_string, self._encode_tuple((course_id, username, date_string, label)))
-        # return [
-        #     ('course_id', 'VARCHAR(255) NOT NULL'),
-        #     ('username', 'VARCHAR(255) NOT NULL'),
-        #     ('date', 'DATE NOT NULL'),
-        #     ('category', 'VARCHAR(255) NOT NULL'),
-        #     ('count', 'INT(11) NOT NULL'),
-        # ]
+        events = []
+        for label in self.get_predicate_labels(event):
+            event_row = self._encode_tuple((course_id, username, date_string, label))
+            events.append(event_row)
+        return events
+
+    def processing(self, raw_events):
         counter = Counter(raw_events)
         for key, num_events in counter.iteritems():
             course_id, username, date_string, label = key
             yield (course_id, username, date_string, label, num_events)
 
-    def init_local(self):
-        self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
-        self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
 
-    def run(self):
-        self.init_local()
-        super(UserActivityTask, self).run()
-        if not self.completed:
-            self.completed = True
-
-    def complete(self):
-        return self.completed
-
-    def requires(self):
-        requires = super(UserActivityTask, self).requires()
-        if isinstance(requires, luigi.Task):
-            yield requires
+# class UserActivityTask(OverwriteOutputMixin, EventLogSelectionMixin, luigi.Task):
+#     """
+#     Categorize activity of users.
+#
+#     Analyze the history of user actions and categorize their activity. Note that categories are not mutually exclusive.
+#     A single event may belong to multiple categories. For example, we define a generic "ACTIVE" category that refers
+#     to any event that has a course_id associated with it, but is not an enrollment event. Other events, such as a
+#     video play event, will also belong to other categories.
+#
+#     The output from this job is a table that represents the number of events seen for each user in each course in each
+#     category on each day.
+#
+#     """
+#     completed = False
+#
+#     def get_predicate_labels(self, event):
+#         """Creates labels by applying hardcoded predicates to a single event."""
+#         # We only want the explicit event, not the implicit form.
+#         event_type = event.get('event_type')
+#         event_source = event.get('event_source')
+#
+#         # Ignore all background task events, since they don't count as a form of activity.
+#         if event_source == 'task':
+#             return []
+#
+#         # Ignore all enrollment events, since they don't count as a form of activity.
+#         if event_type.startswith('edx.course.enrollment.'):
+#             return []
+#
+#         labels = [ACTIVE_LABEL]
+#
+#         if event_source == 'server':
+#             if event_type == 'problem_check':
+#                 labels.append(PROBLEM_LABEL)
+#
+#             if event_type.startswith('edx.forum.') and event_type.endswith('.created'):
+#                 labels.append(POST_FORUM_LABEL)
+#
+#         if event_source in ('browser', 'mobile'):
+#             if event_type == 'play_video':
+#                 labels.append(PLAY_VIDEO_LABEL)
+#
+#         return labels
+#
+#     def _encode_tuple(self, values):
+#         """
+#         Convert values into a tuple containing encoded strings.
+#
+#         Parameters:
+#             Values is a list or tuple.
+#
+#         This enforces a standard encoding for the parts of the
+#         key. Without this a part of the key might appear differently
+#         in the key string when it is coerced to a string by luigi. For
+#         example, if the same key value appears in two different
+#         records, one as a str() type and the other a unicode() then
+#         without this change they would appear as u'Foo' and 'Foo' in
+#         the final key string. Although python doesn't care about this
+#         difference, hadoop does, and will bucket the values
+#         separately. Which is not what we want.
+#         """
+#         # TODO: refactor this into a utility function and update jobs
+#         # to always UTF8 encode mapper keys.
+#         if len(values) > 1:
+#             return tuple([value.encode('utf8') for value in values])
+#         else:
+#             return values[0].encode('utf8')
+#
+#     def get_raw_events_from_log_file(self, input_file):
+#         raw_events = []
+#         for line in input_file:
+#             event_row = self.get_event_and_date_string(line)
+#             if not event_row:
+#                 continue
+#             event, date_string = event_row
+#
+#             username = event.get('username', '').strip()
+#             if not username:
+#                 continue
+#
+#             course_id = eventlog.get_course_id(event)
+#             if not course_id:
+#                 continue
+#
+#             for label in self.get_predicate_labels(event):
+#                 event_row = self._encode_tuple((course_id, username, date_string, label))
+#                 raw_events.append(event_row)
+#         return raw_events
+#
+#     def output(self):
+#         raw_events = []
+#         for log_file in luigi.task.flatten(self.input()):
+#             with log_file.open('r') as temp_file:
+#                 with gzip.GzipFile(fileobj=temp_file) as input_file:
+#                     log.info('reading log file={}'.format(input_file))
+#                     events = self.get_raw_events_from_log_file(input_file)
+#                     if not events:
+#                         continue
+#                     raw_events.extend(events)
+#         # (date_string, self._encode_tuple((course_id, username, date_string, label)))
+#         # return [
+#         #     ('course_id', 'VARCHAR(255) NOT NULL'),
+#         #     ('username', 'VARCHAR(255) NOT NULL'),
+#         #     ('date', 'DATE NOT NULL'),
+#         #     ('category', 'VARCHAR(255) NOT NULL'),
+#         #     ('count', 'INT(11) NOT NULL'),
+#         # ]
+#         counter = Counter(raw_events)
+#         for key, num_events in counter.iteritems():
+#             course_id, username, date_string, label = key
+#             yield (course_id, username, date_string, label, num_events)
+#
+#     def init_local(self):
+#         self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
+#         self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
+#
+#     def run(self):
+#         self.init_local()
+#         super(UserActivityTask, self).run()
+#         if not self.completed:
+#             self.completed = True
+#
+#     def complete(self):
+#         return self.completed
+#
+#     def requires(self):
+#         requires = super(UserActivityTask, self).requires()
+#         if isinstance(requires, luigi.Task):
+#             yield requires
 
 
 class UserActivityDownstreamMixin(EventLogSelectionDownstreamMixin):
@@ -217,7 +320,8 @@ class UserActivityTableTask(UserActivityDownstreamMixin, IncrementalMysqlTableIn
 
 
 @workflow_entry_point
-class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownstreamMixin, IncrementalMysqlTableInsertTask):
+class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownstreamMixin,
+                                         IncrementalMysqlTableInsertTask):
     """
     Creates/populates the `course_activity` Result store table.
     """

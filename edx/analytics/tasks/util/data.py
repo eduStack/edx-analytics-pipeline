@@ -182,7 +182,11 @@ class LoadEventFromLocalFileTask(LoadEventTask):
             event_row = self.get_event_row_from_line(line)
             if not event_row:
                 continue
-            raw_events.append(event_row)
+            if isinstance(event_row, list):
+                for i in event_row:
+                    raw_events.append(i)
+            else:
+                raw_events.append(event_row)
         return raw_events
 
     def parse_event_from_entity(self, line):
@@ -213,12 +217,17 @@ class LoadEventFromMongoTask(LoadEventTask):
 
     def load_raw_events(self):
         event_iter = self.mongo_load_task().output()
-        raw_event = []
+        raw_events = []
         for event in event_iter:
-            row = self.get_event_row_from_document(event)
-            if row:
-                raw_event.append(row)
-        return raw_event
+            event_row = self.get_event_row_from_document(event)
+            if not event_row:
+                continue
+            if isinstance(event_row, list):
+                for i in event_row:
+                    raw_events.append(i)
+            else:
+                raw_events.append(event_row)
+        return raw_events
 
     def requires(self):
         yield self.mongo_load_task()

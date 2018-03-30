@@ -39,6 +39,10 @@ class UserActivityTask(OverwriteOutputMixin, LoadEventFromMongoTask):
 
       """
 
+    def __init__(self, *args, **kwargs):
+        super(UserActivityTask, self).__init__(*args, **kwargs)
+        self.attempted_removal = True
+
     def get_predicate_labels(self, event):
         """Creates labels by applying hardcoded predicates to a single event."""
         # We only want the explicit event, not the implicit form.
@@ -93,12 +97,28 @@ class UserActivityTask(OverwriteOutputMixin, LoadEventFromMongoTask):
             return values[0].encode('utf8')
 
     def event_filter(self):
-        return {
+        filter = {
             '$and': [
                 {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
                 {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
+                {'$or': [
+                    {'$and': [
+                        {'event_source': 'server'},
+                        {'$or': [
+                            {'event_type': 'problem_check'},
+                            {'$and': [
+                                {'event_type': {'$regex': '/^edx\.forum\./'}},
+                                {'event_type': {'$regex': '/\.created$/'}}
+                            ]}
+                        ]}
+                    ]},
+                    {'$and': [
+                        {'event_source': {'$in': ['browser', 'mobile']}},
+                        {'event_type': 'play_video'}
+                    ]}
+                ]},
             ]}
-        # {'event_type': {'$in': ['problem_check', 'play_video']}}
+        return filter
 
     def get_event_row_from_document(self, document):
         event_and_date_string = self.get_event_and_date_string(document)

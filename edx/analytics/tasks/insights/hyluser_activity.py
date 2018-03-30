@@ -7,6 +7,7 @@ from collections import Counter
 
 import luigi
 import luigi.date_interval
+import re
 
 import edx.analytics.tasks.util.eventlog as eventlog
 from edx.analytics.tasks.util.data import LoadEventFromMongoTask
@@ -102,6 +103,8 @@ class UserActivityTask(OverwriteOutputMixin, LoadEventFromMongoTask):
                 {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
                 {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
                 {'$or': [
+                    {'event_source': {'$ne': 'task'}},
+                    {'event_type': {'$not': re.compile('^edx\.course\.enrollment\.')}},
                     {'$and': [
                         {'event_source': 'server'},
                         {'$or': [

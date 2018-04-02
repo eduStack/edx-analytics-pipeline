@@ -17,6 +17,7 @@ from luigi.configuration import get_config
 
 import edx.analytics.tasks.util.eventlog as eventlog
 import edx.analytics.tasks.util.opaque_key_util as opaque_key_util
+from edx.analytics.tasks.util.data import LoadEventFromMongoTask
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTaskMixin, MysqlTableTask
 from edx.analytics.tasks.common.pathutil import PathSetTask
@@ -214,11 +215,7 @@ def get_problem_check_event(line_or_event):
     return key, value
 
 
-class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
-    completed = False
-
-    def complete(self):
-        return self.completed
+class ProblemCheckEvent(AnswerDistributionDownstreamMixin, LoadEventFromMongoTask):
 
     def is_hidden_answer(self, answer_id):
         """Check Id to identify hidden kinds of values."""
@@ -240,18 +237,6 @@ class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
             return True
 
         return False
-
-    def get_raw_events_from_log_file(self, input_file):
-        raw_events = []
-        for line in input_file:
-            event_row = get_problem_check_event(line)
-            if not event_row:
-                continue
-
-            (course_id, problem_id, username), (timestamp, problem_check_info) = event_row
-            event_row = (course_id, problem_id, username, timestamp, problem_check_info)
-            raw_events.append(event_row)
-        return raw_events
 
     def _generate_answers(self, event_string, attempt_category):
         """
@@ -351,16 +336,24 @@ class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
 
         return result
 
-    def output(self):
-        raw_events = []
-        for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as temp_file:
-                with gzip.GzipFile(fileobj=temp_file) as input_file:
-                    log.info('reading log file={}'.format(input_file))
-                    events = self.get_raw_events_from_log_file(input_file)
-                    if not events:
-                        continue
-                    raw_events.extend(events)
+    def event_filter(self):
+        filter = {
+            '$and': [
+                {'event_type': 'problem_check'},
+                {'event_source': 'server'}
+            ]}
+        return filter
+
+    def get_event_row_from_document(self, document):
+        event_row = get_problem_check_event(document)
+        if not event_row:
+            return
+
+        (course_id, problem_id, username), (timestamp, problem_check_info) = event_row
+        event_row = (course_id, problem_id, username, timestamp, problem_check_info)
+        return event_row
+
+    def processing(self, raw_events):
         columns = ['course_id', 'problem_id', 'username', 'timestamp', 'problem_check_info']
         # log.info('raw_events = {}'.format(raw_events))
         df = pd.DataFrame(data=raw_events, columns=columns)
@@ -383,12 +376,182 @@ class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
         # log.info('result = {}'.format(result))
         return result
 
-    def run(self):
-        if not self.completed:
-            self.completed = True
 
-    def requires(self):
-        yield PathSetTask(self.src, self.include, self.manifest)
+# class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
+#     completed = False
+#
+#     def complete(self):
+#         return self.completed
+#
+#     def is_hidden_answer(self, answer_id):
+#         """Check Id to identify hidden kinds of values."""
+#         # some problems have additional answers that have '_dynamath' appended
+#         # to the regular answer_id.  In this case, the contents seem to contain
+#         # something like:
+#         #
+#         # <math xmlns="http://www.w3.org/1998/Math/MathML">
+#         #   <mstyle displaystyle="true">
+#         #     <mo></mo>
+#         #   </mstyle>
+#         # </math>
+#         if answer_id.endswith('_dynamath'):
+#             return True
+#
+#         # Others seem to end with _comment, and I don't know yet what these
+#         # look like.
+#         if answer_id.endswith('_comment'):
+#             return True
+#
+#         return False
+#
+#     def get_raw_events_from_log_file(self, input_file):
+#         raw_events = []
+#         for line in input_file:
+#             event_row = get_problem_check_event(line)
+#             if not event_row:
+#                 continue
+#
+#             (course_id, problem_id, username), (timestamp, problem_check_info) = event_row
+#             event_row = (course_id, problem_id, username, timestamp, problem_check_info)
+#             raw_events.append(event_row)
+#         return raw_events
+#
+#     def _generate_answers(self, event_string, attempt_category):
+#         """
+#         Generates a list of answers given a problem_check event.
+#
+#         Args:
+#             event_string:  a json-encoded string version of an event's data.
+#             attempt_category: a string that is 'first' for a user's first response to a question, 'last' otherwise
+#
+#         Returns:
+#             list of answer data tuples.
+#
+#         See docstring for reducer() for more details.
+#         """
+#         event = json.loads(event_string)
+#
+#         # Get context information:
+#         course_id = eventlog.get_course_id(event)
+#         timestamp = event.get('timestamp')
+#         problem_id = event.get('problem_id')
+#         grade = event.get('grade')
+#         max_grade = event.get('max_grade')
+#         problem_display_name = event.get('context').get('module', {}).get('display_name', None)
+#         result = []
+#
+#         def append_submission(answer_id, submission):
+#             """Convert submission to result to be returned."""
+#             # First augment submission with problem-level information
+#             # not found in the submission:
+#             submission['problem_id'] = problem_id
+#             submission['problem_display_name'] = problem_display_name
+#             submission['attempt_category'] = attempt_category
+#             submission['grade'] = grade
+#             submission['max_grade'] = max_grade
+#
+#             # Add the timestamp so that all responses can be sorted in order.
+#             # We want to use the "latest" values for some fields.
+#             # output_key = (course_id, answer_id)
+#             # output_value = (timestamp, json.dumps(submission))
+#             result.append((course_id, answer_id, timestamp, json.dumps(submission)))
+#
+#         answers = event.get('answers')
+#         correct_map = event.get('correct_map', {})
+#         if 'submission' in event:
+#             submissions = event.get('submission')
+#             for answer_id in submissions:
+#                 if not self.is_hidden_answer(answer_id):
+#                     submission = submissions.get(answer_id)
+#                     # But submission doesn't contain moniker value for answer.
+#                     # So we check the raw answers, and see if its value is
+#                     # different.  If so, we assume it's a moniker.
+#                     answer_value = answers[answer_id]
+#                     if answer_value != submission.get('answer'):
+#                         submission['answer_value_id'] = answer_value
+#
+#                     submission['answer_correct_map'] = correct_map.get(answer_id)
+#                     append_submission(answer_id, submission)
+#
+#         else:
+#             # Otherwise, it's an older event with no 'submission'
+#             # information, so parse it as well as possible.
+#             for answer_id in answers:
+#                 if not self.is_hidden_answer(answer_id):
+#                     answer_value = answers[answer_id]
+#
+#                     # Argh. It seems that sometimes we're encountering
+#                     # bogus answer_id values.  In particular, one that
+#                     # is including the possible choice values, instead
+#                     # of any actual values selected by the student.
+#                     # For now, let's just dump an error and skip it,
+#                     # so that it becomes the equivalent of a hidden
+#                     # answer.
+#
+#                     # TODO: Eventually treat it explicitly as a hidden
+#                     # answer.
+#                     if answer_id not in correct_map:
+#                         log.error("Unexpected answer_id %s not in correct_map: %s", answer_id, event)
+#                         continue
+#                     correctness = correct_map[answer_id].get('correctness') == 'correct'
+#
+#                     variant = event.get('state', {}).get('seed')
+#
+#                     # We do not know the values for 'input_type',
+#                     # 'response_type', or 'question'.  We also don't know if
+#                     # answer_value should be identified as 'answer_value_id' or
+#                     # 'answer', so we choose to use 'answer_value_id' here and
+#                     # never define 'answer'.  This allows disambiguation from
+#                     # events with a submission field, which will always have
+#                     # an 'answer' and only sometimes have an 'answer_value_id'.
+#                     submission = {
+#                         'answer_value_id': answer_value,
+#                         'correct': correctness,
+#                         'variant': variant,
+#                         'answer_correct_map': correct_map.get(answer_id),
+#                     }
+#                     append_submission(answer_id, submission)
+#
+#         return result
+#
+#     def output(self):
+#         raw_events = []
+#         for log_file in luigi.task.flatten(self.input()):
+#             with log_file.open('r') as temp_file:
+#                 with gzip.GzipFile(fileobj=temp_file) as input_file:
+#                     log.info('reading log file={}'.format(input_file))
+#                     events = self.get_raw_events_from_log_file(input_file)
+#                     if not events:
+#                         continue
+#                     raw_events.extend(events)
+#         columns = ['course_id', 'problem_id', 'username', 'timestamp', 'problem_check_info']
+#         # log.info('raw_events = {}'.format(raw_events))
+#         df = pd.DataFrame(data=raw_events, columns=columns)
+#         result = []
+#         for (course_id, problem_id, username), group in df.groupby(['course_id', 'problem_id', 'username']):
+#             values = group[['timestamp', 'problem_check_info']].get_values()
+#             values = sorted(values, key=lambda x: x[0])
+#
+#             # Get the first entry.
+#             _timestamp, first_event = values[0]
+#
+#             for answer in self._generate_answers(first_event, 'first'):
+#                 result.append(answer)
+#
+#             # Get the last entry.
+#             _timestamp, most_recent_event = values[-1]
+#
+#             for answer in self._generate_answers(most_recent_event, 'last'):
+#                 result.append(answer)
+#         # log.info('result = {}'.format(result))
+#         return result
+#
+#     def run(self):
+#         if not self.completed:
+#             self.completed = True
+#
+#     def requires(self):
+#         yield PathSetTask(self.src, self.include, self.manifest)
 
 
 class AnswerDistributionPerCourse(AnswerDistributionDownstreamMixin, luigi.Task):

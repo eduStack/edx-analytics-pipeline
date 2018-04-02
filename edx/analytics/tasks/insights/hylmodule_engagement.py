@@ -141,7 +141,7 @@ class ModuleEngagementRosterRecord(Record):
     enrollment_mode = StringField(length=255, nullable=False,
                                   description='Learner is enrolled in the course with this mode. Example: verified.')
     enrollment_date = DateField(description='First date the learner enrolled in the course.')
-    cohort = StringField(length=255, nullable=False, description='Cohort the learner belongs to, can be null.')
+    cohort = StringField(length=255, description='Cohort the learner belongs to, can be null.')
     problem_attempts = IntegerField(description='Number of times the learner attempted any problem in the course.')
     problems_attempted = IntegerField(description='Number of unique problems the learner has ever attempted in the'
                                                   ' course.')
@@ -341,17 +341,17 @@ SEGMENT_STRUGGLING = 'struggling'
 
 class ModuleEngagementDataTask(OverwriteOutputMixin, LoadEventFromMongoTask):
     # Required parameters
-    date = luigi.DateParameter()
+    # date = luigi.DateParameter()
     # Override superclass to disable this parameter
-    interval = None
+    # interval = None
     # Write the output directly to the final destination and rely on the _SUCCESS file to indicate whether or not it
     # is complete. Note that this is a custom extension to luigi.
     enable_direct_output = True
 
-    def __init__(self, *args, **kwargs):
-        super(ModuleEngagementDataTask, self).__init__(*args, **kwargs)
+    def init_env(self):
         self.attempted_removal = True
-        self.interval = date_interval.Date.from_date(self.date)
+        # self.interval = date_interval.Date.from_date(self.date)
+        super(ModuleEngagementDataTask, self).init_env()
 
     def event_filter(self):
         filter = {
@@ -620,7 +620,7 @@ class ModuleEngagementDataTask(OverwriteOutputMixin, LoadEventFromMongoTask):
 #         pass
 
 
-class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysqlTableInsertTask):
+class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, WeekIntervalMixin, IncrementalMysqlTableInsertTask):
     """The hive table for this engagement data."""
     allow_empty_insert = True
 
@@ -639,11 +639,12 @@ class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysq
                 yield row
 
     def requires_local(self):
-        return ModuleEngagementDataTask(date=self.date)
+        return ModuleEngagementDataTask(interval=self.interval)
 
     @property
     def record_filter(self):
-        return "`date`='{date}'".format(date=self.date.isoformat())  # pylint: disable=no-member
+        return "'{date_a}' <= `date` and `date` <= '{date_b}'".format(date_a=self.interval.date_a.isoformat(),
+                                                                      date_b=self.interval.date_b.isoformat())  # pylint: disable=no-member
 
     def requires(self):
         for req in super(ModuleEngagementTableTask, self).requires():
@@ -705,9 +706,12 @@ class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownst
         yield self.requires_local()
 
     def requires_local(self):
-        return ModuleEngagementIntervalTask(
-            date=self.date,
-            overwrite_from_date=self.overwrite_from_date,
+        # return ModuleEngagementIntervalTask(
+        #     date=self.date,
+        #     overwrite_from_date=self.overwrite_from_date,
+        # )
+        return ModuleEngagementTableTask(
+            date=self.date
         )
 
     @property
@@ -1297,15 +1301,12 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
                 date=self.date,
                 overwrite_from_date=self.overwrite_from_date,
             ),
-            # ExternalCourseEnrollmentPartitionTask(
-            #     interval_end=self.date
+            # CourseEnrollmentTask(
+            #     overwrite_mysql=True,
+            #     source=self.source,
+            #     interval=self.interval,
+            #     pattern=self.pattern
             # ),
-            CourseEnrollmentTask(
-                overwrite_mysql=True,
-                source=self.source,
-                interval=self.interval,
-                pattern=self.pattern
-            ),
             ImportAuthUserTask(),
             ImportCourseUserGroupTask(),
             ImportCourseUserGroupUsersTask(),

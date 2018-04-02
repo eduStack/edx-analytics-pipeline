@@ -23,8 +23,8 @@ from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin
 from edx.analytics.tasks.insights.database_imports import (
     DatabaseImportMixin
 )
-from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask
-from edx.analytics.tasks.insights.hylenrollments import ImportAuthUserProfileTask
+from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask, LoadEventFromMongoTask
+from edx.analytics.tasks.insights.hylenrollments import ImportAuthUserProfileTask, CourseEnrollmentTask
 from edx.analytics.tasks.insights.hyllocation_per_course import ImportAuthUserTask
 from edx.analytics.tasks.insights.enrollments import ExternalCourseEnrollmentPartitionTask
 from edx.analytics.tasks.util import eventlog
@@ -339,38 +339,41 @@ SEGMENT_HIGHLY_ENGAGED = 'highly_engaged'
 SEGMENT_STRUGGLING = 'struggling'
 
 
-class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, luigi.Task):
-    """
-    Process the event log and categorize user engagement with various types of content.
-
-    This emits one record for each type of interaction. Note that this is loosely defined. For example, for problems, it
-    will emit two records if the problem is correct (one for the "attempt" interaction and one for the "correct attempt"
-    interaction).
-
-    This task is intended to be run incrementally and populate a single Hive partition. Although time consuming to
-    bootstrap the table, it results in a significantly cleaner workflow. It is much clearer what the success and
-    failure conditions are for a task and the management of residual data is dramatically simplified. All of that said,
-    Hadoop is not designed to operate like this and it would be significantly more efficient to process a range of dates
-    at once. The choice was made to stick with the cleaner workflow since the steady-state is the same for both options
-    - in general we will only be processing one day of data at a time.
-    """
-
+class ModuleEngagementDataTask(OverwriteOutputMixin, LoadEventFromMongoTask):
     # Required parameters
     date = luigi.DateParameter()
-    completed = False
     # Override superclass to disable this parameter
     interval = None
-
     # Write the output directly to the final destination and rely on the _SUCCESS file to indicate whether or not it
     # is complete. Note that this is a custom extension to luigi.
     enable_direct_output = True
 
     def __init__(self, *args, **kwargs):
         super(ModuleEngagementDataTask, self).__init__(*args, **kwargs)
-
+        self.attempted_removal = True
         self.interval = date_interval.Date.from_date(self.date)
 
-    def mapper(self, line):
+    def event_filter(self):
+        filter = {
+            '$and': [
+                {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
+                {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
+                {'$or': [
+                    {'$and': [
+                        {'event_source': 'server'},
+                        {'event_type': 'problem_check'},
+                    ]},
+                    {'event_type': 'play_video'},
+                    {'$and': [
+                        {'event_type': {'$regex': '/^edx\.forum\./'}},
+                        {'event_type': {'$regex': '/\.created$/'}}
+                    ]}
+                ]},
+            ]}
+        return filter
+
+    def get_event_row_from_document(self, document):
+        line = document
         value = self.get_event_and_date_string(line)
         if value is None:
             return
@@ -439,25 +442,7 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
 
         return entity_id, entity_type, user_actions
 
-    def get_raw_events_from_log_file(self, input_file):
-        raw_events = []
-        for line in input_file:
-            event_row = self.mapper(line)
-            if not event_row:
-                continue
-            raw_events.extend(event_row)
-        return raw_events
-
-    def output(self):
-        raw_events = []
-        for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as temp_file:
-                with gzip.GzipFile(fileobj=temp_file) as input_file:
-                    log.info('reading log file={}'.format(input_file))
-                    events = self.get_raw_events_from_log_file(input_file)
-                    if not events:
-                        continue
-                    raw_events.extend(events)
+    def processing(self, raw_events):
         columns = ['record_without_count', 'count']
         # log.info('raw_events = {}'.format(raw_events))
         if len(raw_events) == 0:
@@ -470,35 +455,169 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
                 values = group.get_values()
                 yield (course_id, username, date, entity_type, entity_id, action, len(values))
 
-    def complete(self):
-        return self.completed
-        # if self.overwrite and not self.attempted_removal:
-        #     return False
-        # else:
-        #     return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
 
-    def init_local(self):
-        self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
-        self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
-
-    def run(self):
-        self.init_local()
-        super(ModuleEngagementDataTask, self).run()
-        if not self.completed:
-            self.completed = True
-        # self.remove_output_on_overwrite()
-        # output_target = self.output()
-        # if not self.complete() and output_target.exists():
-        #     output_target.remove()
-        # return super(ModuleEngagementDataTask, self).run()
-
-    def requires(self):
-        requires = super(ModuleEngagementDataTask, self).requires()
-        if isinstance(requires, luigi.Task):
-            yield requires
-
-    def incr_counter(self, param, param1, param2):
-        pass
+#
+#
+# class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, luigi.Task):
+#     """
+#     Process the event log and categorize user engagement with various types of content.
+#
+#     This emits one record for each type of interaction. Note that this is loosely defined. For example, for problems, it
+#     will emit two records if the problem is correct (one for the "attempt" interaction and one for the "correct attempt"
+#     interaction).
+#
+#     This task is intended to be run incrementally and populate a single Hive partition. Although time consuming to
+#     bootstrap the table, it results in a significantly cleaner workflow. It is much clearer what the success and
+#     failure conditions are for a task and the management of residual data is dramatically simplified. All of that said,
+#     Hadoop is not designed to operate like this and it would be significantly more efficient to process a range of dates
+#     at once. The choice was made to stick with the cleaner workflow since the steady-state is the same for both options
+#     - in general we will only be processing one day of data at a time.
+#     """
+#
+#     # Required parameters
+#     date = luigi.DateParameter()
+#     completed = False
+#     # Override superclass to disable this parameter
+#     interval = None
+#
+#     # Write the output directly to the final destination and rely on the _SUCCESS file to indicate whether or not it
+#     # is complete. Note that this is a custom extension to luigi.
+#     enable_direct_output = True
+#
+#     def __init__(self, *args, **kwargs):
+#         super(ModuleEngagementDataTask, self).__init__(*args, **kwargs)
+#
+#         self.interval = date_interval.Date.from_date(self.date)
+#
+#     def mapper(self, line):
+#         value = self.get_event_and_date_string(line)
+#         if value is None:
+#             return
+#         event, date_string = value
+#
+#         username = event.get('username', '').strip()
+#         if not username:
+#             return
+#
+#         event_type = event.get('event_type')
+#         if event_type is None:
+#             return
+#
+#         course_id = eventlog.get_course_id(event)
+#         if not course_id:
+#             return
+#
+#         event_data = eventlog.get_event_data(event)
+#         if event_data is None:
+#             return
+#
+#         event_source = event.get('event_source')
+#
+#         entity_id, entity_type, user_actions = self.get_user_actions_from_event(event_data, event_source, event_type)
+#
+#         if not entity_id or not entity_type:
+#             return
+#
+#         result = []
+#         for action in user_actions:
+#             date = DateField().deserialize_from_string(date_string)
+#             result.append(((course_id, username, date, entity_type, entity_id, action), 1))
+#         return result
+#
+#     def get_user_actions_from_event(self, event_data, event_source, event_type):
+#         """
+#         All of the logic needed to categorize the event.
+#
+#         Returns: A tuple containing the ID of the entity, the type of entity (video, problem etc) and a list of actions
+#             that the event represents. A single event may represent several categories of action. A submitted correct
+#             problem, for example, will return both an attempt action and a completion action.
+#
+#         """
+#         entity_id = None
+#         entity_type = None
+#         user_actions = []
+#
+#         if event_type == 'problem_check':
+#             if event_source == 'server':
+#                 entity_type = 'problem'
+#                 if event_data.get('success', 'incorrect').lower() == 'correct':
+#                     user_actions.append('completed')
+#
+#                 user_actions.append('attempted')
+#                 entity_id = event_data.get('problem_id')
+#         elif event_type == 'play_video':
+#             entity_type = 'video'
+#             user_actions.append('viewed')
+#             entity_id = event_data.get('id', '').strip()  # We have seen id values with leading newlines.
+#         elif event_type.startswith('edx.forum.'):
+#             entity_type = 'discussion'
+#             if event_type.endswith('.created'):
+#                 user_actions.append('contributed')
+#
+#             entity_id = event_data.get('commentable_id')
+#
+#         return entity_id, entity_type, user_actions
+#
+#     def get_raw_events_from_log_file(self, input_file):
+#         raw_events = []
+#         for line in input_file:
+#             event_row = self.mapper(line)
+#             if not event_row:
+#                 continue
+#             raw_events.extend(event_row)
+#         return raw_events
+#
+#     def output(self):
+#         raw_events = []
+#         for log_file in luigi.task.flatten(self.input()):
+#             with log_file.open('r') as temp_file:
+#                 with gzip.GzipFile(fileobj=temp_file) as input_file:
+#                     log.info('reading log file={}'.format(input_file))
+#                     events = self.get_raw_events_from_log_file(input_file)
+#                     if not events:
+#                         continue
+#                     raw_events.extend(events)
+#         columns = ['record_without_count', 'count']
+#         # log.info('raw_events = {}'.format(raw_events))
+#         if len(raw_events) == 0:
+#             log.warn('raw_events is empty!')
+#             pass
+#         else:
+#             df = pd.DataFrame(data=raw_events, columns=columns)
+#             for (course_id, username, date, entity_type, entity_id, action), group in df.groupby(
+#                     ['record_without_count']):
+#                 values = group.get_values()
+#                 yield (course_id, username, date, entity_type, entity_id, action, len(values))
+#
+#     def complete(self):
+#         return self.completed
+#         # if self.overwrite and not self.attempted_removal:
+#         #     return False
+#         # else:
+#         #     return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+#
+#     def init_local(self):
+#         self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
+#         self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
+#
+#     def run(self):
+#         self.init_local()
+#         super(ModuleEngagementDataTask, self).run()
+#         if not self.completed:
+#             self.completed = True
+#         # self.remove_output_on_overwrite()
+#         # output_target = self.output()
+#         # if not self.complete() and output_target.exists():
+#         #     output_target.remove()
+#         # return super(ModuleEngagementDataTask, self).run()
+#
+#     def requires(self):
+#         requires = super(ModuleEngagementDataTask, self).requires()
+#         if isinstance(requires, luigi.Task):
+#             yield requires
+#
+#     def incr_counter(self, param, param1, param2):
+#         pass
 
 
 class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysqlTableInsertTask):
@@ -1181,13 +1300,12 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
             # ExternalCourseEnrollmentPartitionTask(
             #     interval_end=self.date
             # ),
-            # CourseEnrollmentTask(
-            #     overwrite_mysql=self.overwrite_mysql,
-            #     source=self.source,
-            #     interval=self.interval,
-            #     pattern=self.pattern,
-            #     overwrite_n_days=self.overwrite_n_days
-            # )
+            CourseEnrollmentTask(
+                overwrite_mysql=True,
+                source=self.source,
+                interval=self.interval,
+                pattern=self.pattern
+            ),
             ImportAuthUserTask(),
             ImportCourseUserGroupTask(),
             ImportCourseUserGroupUsersTask(),

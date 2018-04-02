@@ -14,7 +14,7 @@ import luigi.task
 import pandas as pd
 from luigi import date_interval
 
-from edx.analytics.tasks.util.elasticsearch_target import ElasticsearchTarget
+from edx.analytics.tasks.util.elasticsearch_target import ElasticsearchTarget, ElasticsearchESTarget
 from edx.analytics.tasks.common.elasticsearch_load import ElasticsearchIndexTask, ElasticsearchIndexTaskMixin
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin
 from edx.analytics.tasks.common.mysql_load import IncrementalMysqlTableInsertTask, MysqlTableTask, \
@@ -1337,10 +1337,10 @@ class ModuleEngagementRosterIndexTask(UniversalDataTask, ElasticsearchIndexTaskM
     index = alias
 
     def init_env(self):
-        self.init_es_client()
-        self.batch_index = 0
         self.indexes_for_alias = set()
+        self.batch_index = 0
         self.index = self.alias + '_' + str(hash(self.update_id()))
+        self.init_es_client()
 
     def requires_local(self):
         return ModuleEngagementRosterPartitionTask(
@@ -1468,6 +1468,14 @@ class ModuleEngagementRosterIndexTask(UniversalDataTask, ElasticsearchIndexTaskM
                                                   goals=row[26])
             lines.append(record)
         return lines
+
+    def output(self):
+        return ElasticsearchESTarget(
+            client=self.create_elasticsearch_client(),
+            index=self.alias,
+            doc_type=self.doc_type,
+            update_id=self.update_id()
+        )
 
     def run(self):
         try:

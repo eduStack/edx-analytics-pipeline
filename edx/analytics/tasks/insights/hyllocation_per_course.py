@@ -102,8 +102,8 @@ class LastCountryOfUserEventLogSelectionTask(LastCountryOfUserDownstreamMixin, L
     counter_category_name = 'LastCountryOfUser Events'
 
     def __init__(self, *args, **kwargs):
-        LastCountryOfUserDownstreamMixin.__init__(*args, **kwargs)
-        LoadEventFromMongoTask.__init__(*args, **kwargs)
+        LastCountryOfUserDownstreamMixin.__init__(self, *args, **kwargs)
+        LoadEventFromMongoTask.__init__(self, *args, ** kwargs)
         self.attempted_removal = True
 
     def event_filter(self):

@@ -518,6 +518,12 @@ class IncrementalMysqlInsertTask(MysqlInsertTask):
 
 
 class MysqlTableTask(MysqlInsertTask):
+
+    def __init__(self, *args, **kwargs):
+        super(MysqlTableTask, self).__init__(*args, **kwargs)
+        self.overwrite = True
+        self.allow_empty_insert = True
+
     @property
     def table(self):
         raise NotImplementedError

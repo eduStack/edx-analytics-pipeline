@@ -216,6 +216,10 @@ def get_problem_check_event(line_or_event):
 
 
 class ProblemCheckEvent(AnswerDistributionDownstreamMixin, LoadEventFromMongoTask):
+    interval = None
+
+    def init_env(self):
+        pass
 
     def is_hidden_answer(self, answer_id):
         """Check Id to identify hidden kinds of values."""

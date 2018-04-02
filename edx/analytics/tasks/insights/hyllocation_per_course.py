@@ -522,6 +522,7 @@ class AuthUserSelectionTask(LoadDataFromDatabaseTask):
     def query(self):
         query = """
                 SELECT 
+                    id,
                     username,
                     last_login,
                     date_joined,
@@ -552,6 +553,7 @@ class ImportAuthUserTask(MysqlTableTask):
     @property
     def columns(self):
         return [
+            ('user_id', 'INT'),
             ('username', 'VARCHAR(255)'),
             ('last_login', 'TIMESTAMP'),
             ('date_joined', 'TIMESTAMP'),

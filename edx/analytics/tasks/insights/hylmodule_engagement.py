@@ -1223,19 +1223,19 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
             {aup_goals}
         FROM course_enrollment ce
         INNER JOIN auth_user au
-            ON (ce.user_id = au.id)
+            ON (ce.user_id = au.user_id)
         INNER JOIN auth_userprofile aup
-            ON (au.id = aup.user_id)
+            ON (au.user_id = aup.user_id)
         LEFT OUTER JOIN (
             SELECT
                 cugu.user_id,
                 cug.course_id,
-                cug.name
+                cug.`name`
             FROM course_groups_courseusergroup_users cugu
             INNER JOIN course_groups_courseusergroup cug
                 ON (cugu.courseusergroup_id = cug.courseusergroup_id)
         ) cohort
-            ON (au.id = cohort.user_id AND ce.course_id = cohort.course_id)
+            ON (au.user_id = cohort.user_id AND ce.course_id = cohort.course_id)
         LEFT OUTER JOIN module_engagement_summary eng
             ON (ce.course_id = eng.course_id AND au.username = eng.username AND eng.end_date = '{end}')
         LEFT OUTER JOIN module_engagement_summary old_eng

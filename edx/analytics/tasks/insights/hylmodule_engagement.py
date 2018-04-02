@@ -23,7 +23,7 @@ from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin
 from edx.analytics.tasks.insights.database_imports import (
     DatabaseImportMixin
 )
-from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask, LoadEventFromMongoTask
+from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask, LoadEventFromMongoTask, UniversalDataTask
 from edx.analytics.tasks.insights.hylenrollments import ImportAuthUserProfileTask, CourseEnrollmentTask
 from edx.analytics.tasks.insights.hyllocation_per_course import ImportAuthUserTask
 from edx.analytics.tasks.insights.enrollments import ExternalCourseEnrollmentPartitionTask
@@ -1314,7 +1314,7 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
         )
 
 
-class ModuleEngagementRosterIndexTask(luigi.Task, ElasticsearchIndexTaskMixin, ModuleEngagementDownstreamMixin,
+class ModuleEngagementRosterIndexTask(UniversalDataTask, ElasticsearchIndexTaskMixin, ModuleEngagementDownstreamMixin,
                                       ModuleEngagementRosterIndexDownstreamMixin):
     """Load the roster data into elasticsearch for rapid query."""
 
@@ -1336,10 +1336,11 @@ class ModuleEngagementRosterIndexTask(luigi.Task, ElasticsearchIndexTaskMixin, M
     )
     index = alias
 
-    def __init__(self, *args, **kwargs):
-        super(ModuleEngagementRosterIndexTask, self).__init__(*args, **kwargs)
+    def init_env(self):
+        self.init_es_client()
         self.batch_index = 0
         self.indexes_for_alias = set()
+        self.index = self.alias + '_' + str(hash(self.update_id()))
 
     def requires_local(self):
         return ModuleEngagementRosterPartitionTask(
@@ -1356,82 +1357,9 @@ class ModuleEngagementRosterIndexTask(luigi.Task, ElasticsearchIndexTaskMixin, M
         """Generate the elasticsearch mapping from the record schema."""
         return ModuleEngagementRosterRecord.get_elasticsearch_properties()
 
-    def output(self):
-        return ElasticsearchTarget(
-            client=self.create_elasticsearch_client(),
-            index=self.alias,
-            doc_type=self.doc_type,
-            update_id=self.update_id()
-        )
-
     @property
     def doc_type(self):
         return 'roster_entry'
-
-    def insert_data_to_es(self):
-        query = """
-        SELECT 
-            course_id, 
-            username, 
-            start_date, 
-            end_date, 
-            email, 
-            `name`, 
-            enrollment_mode, 
-            enrollment_date, 
-            cohort, 
-            problem_attempts, 
-            problems_attempted, 
-            problems_completed, 
-            problem_attempts_per_completed, 
-            videos_viewed, 
-            discussion_contributions, 
-            segments, 
-            attempt_ratio_order, 
-            user_id, 
-            `language`, 
-            location, 
-            year_of_birth, 
-            level_of_education, 
-            gender, 
-            mailing_address, 
-            city, 
-            country, 
-            goals
-        FROM module_engagement_roster
-        """
-        res = get_mysql_query_results(self.credentials, self.database, query)
-        lines = []
-        for row in res:
-            record = ModuleEngagementRosterRecord(course_id=row[0],
-                                                  username=row[1],
-                                                  start_date=row[2],
-                                                  end_date=row[3],
-                                                  email=row[4],
-                                                  name=row[5],
-                                                  enrollment_mode=row[6],
-                                                  enrollment_date=row[7],
-                                                  cohort=row[8],
-                                                  problem_attempts=row[9],
-                                                  problems_attempted=row[10],
-                                                  problems_completed=row[11],
-                                                  problem_attempts_per_completed=row[12],
-                                                  videos_viewed=row[13],
-                                                  discussion_contributions=row[14],
-                                                  segments=row[15],
-                                                  attempt_ratio_order=row[16],
-                                                  user_id=row[17],
-                                                  language=row[18],
-                                                  location=row[19],
-                                                  year_of_birth=row[20],
-                                                  level_of_education=row[21],
-                                                  gender=row[22],
-                                                  mailing_address=row[23],
-                                                  city=row[24],
-                                                  country=row[25],
-                                                  goals=row[26])
-            lines.append(record)
-        self.update_index(lines)
 
     def document_generator(self, lines):
         for record in lines:
@@ -1473,12 +1401,78 @@ class ModuleEngagementRosterIndexTask(luigi.Task, ElasticsearchIndexTaskMixin, M
         yield ExternalURL(url=self.credentials)
         yield self.requires_local()
 
+    def load_data(self):
+        query = """
+               SELECT 
+                   course_id, 
+                   username, 
+                   start_date, 
+                   end_date, 
+                   email, 
+                   `name`, 
+                   enrollment_mode, 
+                   enrollment_date, 
+                   cohort, 
+                   problem_attempts, 
+                   problems_attempted, 
+                   problems_completed, 
+                   problem_attempts_per_completed, 
+                   videos_viewed, 
+                   discussion_contributions, 
+                   segments, 
+                   attempt_ratio_order, 
+                   user_id, 
+                   `language`, 
+                   location, 
+                   year_of_birth, 
+                   level_of_education, 
+                   gender, 
+                   mailing_address, 
+                   city, 
+                   country, 
+                   goals
+               FROM module_engagement_roster
+               """
+        res = get_mysql_query_results(self.credentials, self.database, query)
+        return res
+
+    def processing(self, data):
+        lines = []
+        for row in data:
+            record = ModuleEngagementRosterRecord(course_id=row[0],
+                                                  username=row[1],
+                                                  start_date=row[2],
+                                                  end_date=row[3],
+                                                  email=row[4],
+                                                  name=row[5],
+                                                  enrollment_mode=row[6],
+                                                  enrollment_date=row[7],
+                                                  cohort=row[8],
+                                                  problem_attempts=row[9],
+                                                  problems_attempted=row[10],
+                                                  problems_completed=row[11],
+                                                  problem_attempts_per_completed=row[12],
+                                                  videos_viewed=row[13],
+                                                  discussion_contributions=row[14],
+                                                  segments=row[15],
+                                                  attempt_ratio_order=row[16],
+                                                  user_id=row[17],
+                                                  language=row[18],
+                                                  location=row[19],
+                                                  year_of_birth=row[20],
+                                                  level_of_education=row[21],
+                                                  gender=row[22],
+                                                  mailing_address=row[23],
+                                                  city=row[24],
+                                                  country=row[25],
+                                                  goals=row[26])
+            lines.append(record)
+        return lines
+
     def run(self):
         try:
-            self.index = self.alias + '_' + str(hash(self.update_id()))
             super(ModuleEngagementRosterIndexTask, self).run()
-            self.init_es_client()
-            self.insert_data_to_es()
+            self.update_index(self.result)
         except Exception:  # pylint: disable=broad-except
             self.rollback()
             raise

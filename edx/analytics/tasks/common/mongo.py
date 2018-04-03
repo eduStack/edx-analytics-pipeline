@@ -110,21 +110,6 @@ class LoadRawEventFromMongoTask(MongoTask):
         return self.collection.find(self.event_filter)
 
 
-# class LogFileImportMixin(EventLogSelectionDownstreamMixin):
-#     # log_path = luigi.Parameter(
-#     #     is_list=True,
-#     #     default=['/tmp/tracking'],
-#     #     config_path={'section': 'mongo', 'name': 'log_path'},
-#     #     description='Path to log file imported to mongo.'
-#     # )
-#     # disable interval
-#     expand_interval = None
-#     # source = None
-#     # interval = None
-#     # pattern = None
-#     # date_pattern = None
-
-
 class LoadEventFromLogFileNoExpandIntervalTask(UniversalDataTask, EventLogSelectionDownstreamMixin):
     def requires(self):
         return PathSelectionByDateIntervalTask(
@@ -132,7 +117,7 @@ class LoadEventFromLogFileNoExpandIntervalTask(UniversalDataTask, EventLogSelect
             interval=self.interval,
             pattern=self.pattern,
             date_pattern=self.date_pattern,
-            expand_interval=0
+            expand_interval=datetime.timedelta(0)
         )
 
     def load_data(self):
@@ -160,21 +145,10 @@ class LoadEventFromLogFileNoExpandIntervalTask(UniversalDataTask, EventLogSelect
             raw_events.append(event_row)
         return raw_events
 
-    # def output(self):
-    #     before output we need remove processed files
-    #     for log_file in luigi.task.flatten(self.input()):
-    #         log_file.remove()
-    #     return super(LoadEventFromLogFileNoExpandIntervalTask, self).output()
-    #
-    # def get_log_file_paths(self):
-    #     for source in self.log_path:
-    #         for directory_path, _subdir_paths, filenames in os.walk(source):
-    #             for filename in filenames:
-    #                 yield os.path.join(directory_path, filename)
-
 
 @workflow_entry_point
 class LoadEventToMongoTask(MongoTask):
+    interval = luigi.DateIntervalParameter(default=None)
 
     def load_data(self):
         return self.log_file_selection_task().output()
@@ -186,12 +160,21 @@ class LoadEventToMongoTask(MongoTask):
         return events_gen
 
     def log_file_selection_task(self):
-        current = datetime.datetime.utcnow().date()
-        yesterday = current - datetime.timedelta(days=1)
-        date = yesterday.isoformat()
-        return LoadEventFromLogFileNoExpandIntervalTask(interval=luigi.date_interval.Custom(date, date))
+        if not self.interval:
+            log.info('not spec interval, load yesterday log file.')
+            current = datetime.datetime.utcnow().date()
+            yesterday = (current - datetime.timedelta(days=1)).isoformat()
+            self.interval = luigi.DateIntervalParameter().parse('{}-{}'.format(yesterday, yesterday))
+        log.info('load {} log file'.format(self.interval))
+        return LoadEventFromLogFileNoExpandIntervalTask(interval=self.interval)
 
     def requires(self):
         for req in super(LoadEventToMongoTask, self).requires():
             yield req
         yield self.log_file_selection_task()
+    #
+    # def complete(self):
+    #     return self.output().exist()
+    #
+    # def output(self):
+    #     return MongoTarget(interval=self.interval)

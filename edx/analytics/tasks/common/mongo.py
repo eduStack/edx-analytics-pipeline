@@ -172,50 +172,51 @@ class LoadEventToMongoTask(MongoTask):
             yield req
         yield self.log_file_selection_task()
 
-    def run(self):
-        super(LoadEventToMongoTask, self).run()
-        for target in self.output():
-            target.touch()
-
-    def complete(self):
-        return all(target.exists() for target in self.output())
-
-    def output(self):
-        targets = []
-        for date in self.interval:
-            targets.append(MongoTarget(credentials_target=self.credential_task().output(),
-                                       database=self.database,
-                                       date=date))
-        return targets
-
-
-class MongoTarget(luigi.Target):
-
-    def __init__(self, credentials_target, database, date):
-        super(MongoTarget, self).__init__()
-        cred = None
-        with credentials_target.open('r') as credentials_file:
-            cred = json.load(credentials_file)
-
-        connection = MongoConn(username=cred.get('username'),
-                               password=cred.get('password'),
-                               db=database,
-                               host=cred.get('host'),
-                               port=cred.get('port'))
-        self.collection = connection.db['imported_marker']
-        self.date = date
-
-    def touch(self):
-        self.collection.insert({'date': self.date.isoformat(), 'imported': True})
-
-    def exists(self):
-        filter = {
-            '$and': [
-                {'date': self.date.isoformat()},
-                {'imported': True}
-            ]
-        }
-        res = self.collection.find(filter)
-        for record in res:
-            return True
-        return False
+# TODO : slow
+#     def run(self):
+#         super(LoadEventToMongoTask, self).run()
+#         for target in self.output():
+#             target.touch()
+#
+#     def complete(self):
+#         return all(target.exists() for target in self.output())
+#
+#     def output(self):
+#         targets = []
+#         for date in self.interval:
+#             targets.append(MongoTarget(credentials_target=self.credential_task().output(),
+#                                        database=self.database,
+#                                        date=date))
+#         return targets
+#
+#
+# class MongoTarget(luigi.Target):
+#
+#     def __init__(self, credentials_target, database, date):
+#         super(MongoTarget, self).__init__()
+#         cred = None
+#         with credentials_target.open('r') as credentials_file:
+#             cred = json.load(credentials_file)
+#
+#         connection = MongoConn(username=cred.get('username'),
+#                                password=cred.get('password'),
+#                                db=database,
+#                                host=cred.get('host'),
+#                                port=cred.get('port'))
+#         self.collection = connection.db['imported_marker']
+#         self.date = date
+#
+#     def touch(self):
+#         self.collection.insert({'date': self.date.isoformat(), 'imported': True})
+#
+#     def exists(self):
+#         filter = {
+#             '$and': [
+#                 {'date': self.date.isoformat()},
+#                 {'imported': True}
+#             ]
+#         }
+#         res = self.collection.find(filter)
+#         for record in res:
+#             return True
+#         return False

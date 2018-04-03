@@ -178,7 +178,7 @@ class LoadEventToMongoTask(MongoTask):
             target.touch()
 
     def complete(self):
-        return self.output().exist()
+        return all(target.exists() for target in self.output())
 
     def output(self):
         targets = []
@@ -206,12 +206,12 @@ class MongoTarget(luigi.Target):
         self.date = date
 
     def touch(self):
-        self.collection.insert({'date': self.date, 'imported': True})
+        self.collection.insert({'date': self.date.isoformat(), 'imported': True})
 
     def exists(self):
         filter = {
             '$and': [
-                {'date': self.date},
+                {'date': self.date.isoformat()},
                 {'imported': True}
             ]
         }

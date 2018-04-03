@@ -72,7 +72,6 @@ class MongoTaskMixin(object):
 class MongoTask(MongoTaskMixin, UniversalDataTask):
     connection = None
     collection = None
-    cred = None
 
     def requires(self):
         yield self.credential_task()
@@ -87,7 +86,6 @@ class MongoTask(MongoTaskMixin, UniversalDataTask):
         cred = None
         with credentials_target.open('r') as credentials_file:
             cred = json.load(credentials_file)
-            self.cred = cred
 
         connection = MongoConn(username=cred.get('username'),
                                password=cred.get('password'),
@@ -185,7 +183,7 @@ class LoadEventToMongoTask(MongoTask):
     def output(self):
         targets = []
         for date in self.interval:
-            targets.append(MongoTarget(credentials=self.cred,
+            targets.append(MongoTarget(credentials_target=self.credential_task().output(),
                                        database=self.database,
                                        date=date))
         return targets
@@ -193,13 +191,17 @@ class LoadEventToMongoTask(MongoTask):
 
 class MongoTarget(luigi.Target):
 
-    def __init__(self, credentials, database, date):
+    def __init__(self, credentials_target, database, date):
         super(MongoTarget, self).__init__()
-        connection = MongoConn(username=credentials.get('username'),
-                               password=credentials.get('password'),
+        cred = None
+        with credentials_target.open('r') as credentials_file:
+            cred = json.load(credentials_file)
+
+        connection = MongoConn(username=cred.get('username'),
+                               password=cred.get('password'),
                                db=database,
-                               host=credentials.get('host'),
-                               port=credentials.get('port'))
+                               host=cred.get('host'),
+                               port=cred.get('port'))
         self.collection = connection.db['imported_marker']
         self.date = date
 

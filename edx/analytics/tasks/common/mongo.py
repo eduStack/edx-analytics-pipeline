@@ -72,6 +72,7 @@ class MongoTaskMixin(object):
 class MongoTask(MongoTaskMixin, UniversalDataTask):
     connection = None
     collection = None
+    cred = None
 
     def requires(self):
         yield self.credential_task()
@@ -82,9 +83,11 @@ class MongoTask(MongoTaskMixin, UniversalDataTask):
     def init_env(self):
         # init conn
         credentials_target = self.credential_task().output()
+        self.credential_target = credentials_target
         cred = None
         with credentials_target.open('r') as credentials_file:
             cred = json.load(credentials_file)
+            self.cred = cred
 
         connection = MongoConn(username=cred.get('username'),
                                password=cred.get('password'),
@@ -148,7 +151,10 @@ class LoadEventFromLogFileNoExpandIntervalTask(UniversalDataTask, EventLogSelect
 
 @workflow_entry_point
 class LoadEventToMongoTask(MongoTask):
-    interval = luigi.DateIntervalParameter(default=None)
+    current = datetime.datetime.utcnow().date()
+    yesterday = current - datetime.timedelta(days=1)
+    interval = luigi.DateIntervalParameter(default=luigi.DateIntervalParameter().parse(
+        '{}-{}'.format(yesterday.isoformat(), current.isoformat())))
 
     def load_data(self):
         return self.log_file_selection_task().output()
@@ -160,11 +166,6 @@ class LoadEventToMongoTask(MongoTask):
         return events_gen
 
     def log_file_selection_task(self):
-        if not self.interval:
-            log.info('not spec interval, load yesterday log file.')
-            current = datetime.datetime.utcnow().date()
-            yesterday = (current - datetime.timedelta(days=1)).isoformat()
-            self.interval = luigi.DateIntervalParameter().parse('{}-{}'.format(yesterday, yesterday))
         log.info('load {} log file'.format(self.interval))
         return LoadEventFromLogFileNoExpandIntervalTask(interval=self.interval)
 
@@ -172,9 +173,47 @@ class LoadEventToMongoTask(MongoTask):
         for req in super(LoadEventToMongoTask, self).requires():
             yield req
         yield self.log_file_selection_task()
-    #
-    # def complete(self):
-    #     return self.output().exist()
-    #
-    # def output(self):
-    #     return MongoTarget(interval=self.interval)
+
+    def run(self):
+        super(LoadEventToMongoTask, self).run()
+        for target in self.output():
+            target.touch()
+
+    def complete(self):
+        return self.output().exist()
+
+    def output(self):
+        targets = []
+        for date in self.interval:
+            targets.append(MongoTarget(credentials=self.cred,
+                                       database=self.database,
+                                       date=date))
+        return targets
+
+
+class MongoTarget(luigi.Target):
+
+    def __init__(self, credentials, database, date):
+        super(MongoTarget, self).__init__()
+        connection = MongoConn(username=credentials.get('username'),
+                               password=credentials.get('password'),
+                               db=database,
+                               host=credentials.get('host'),
+                               port=credentials.get('port'))
+        self.collection = connection.db['imported_marker']
+        self.date = date
+
+    def touch(self):
+        self.collection.insert({'date': self.date, 'imported': True})
+
+    def exists(self):
+        filter = {
+            '$and': [
+                {'date': self.date},
+                {'imported': True}
+            ]
+        }
+        res = self.collection.find(filter)
+        for record in res:
+            return True
+        return False

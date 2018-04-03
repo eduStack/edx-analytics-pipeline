@@ -123,16 +123,22 @@ class LogFileImportMixin(EventLogSelectionDownstreamMixin):
     date_pattern = None
 
 
-class LoadEventFromLogFileWithoutIntervalTask(LoadEventFromLocalFileTask, LogFileImportMixin):
-
-    def init_env(self):
-        pass
-
+class LoadEventFromLogFileWithoutIntervalTask(UniversalDataTask, LogFileImportMixin):
     # TODO make sure log_path and processed_path exist
 
     def requires(self):
         # do not invoke parent class method
         yield [ExternalURL(url) for url in self.get_log_file_paths()]
+
+    def load_data(self):
+        for log_file in luigi.task.flatten(self.input()):
+            with log_file.open('r') as temp_file:
+                with gzip.GzipFile(fileobj=temp_file) as input_file:
+                    log.info('reading log file={}'.format(input_file))
+                    events = self.get_raw_events_from_log_file(input_file)
+                    if not events:
+                        continue
+                    yield events
 
     def get_raw_events_from_log_file(self, input_file):
         # override parent class to disable event filter
@@ -168,9 +174,11 @@ class LoadEventToMongoTask(MongoTask):
     def load_data(self):
         return self.log_file_selection_task().output()
 
-    def processing(self, data):
-        self.collection.insert_many(data)
-        return data
+    def processing(self, events_gen):
+        for events in events_gen:
+            self.collection.insert_many(events)
+            log.info('insert {} documents to mongo'.format(len(events)))
+        return events_gen
 
     def log_file_selection_task(self):
         return LoadEventFromLogFileWithoutIntervalTask()

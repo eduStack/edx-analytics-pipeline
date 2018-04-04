@@ -1,28 +1,24 @@
 """Compute metrics related to user enrollments in courses"""
 import datetime
-import gzip
 import logging
 
 import luigi.task
 import pandas as pd
 from luigi.parameter import DateIntervalParameter
 
-from edx.analytics.tasks.common.mysql_load import get_mysql_query_results, MysqlTableTask, \
+from edx.analytics.tasks.common.mysql_load import MysqlTableTask, \
     IncrementalMysqlTableInsertTask
 from edx.analytics.tasks.common.pathutil import (
-    EventLogSelectionDownstreamMixin, EventLogSelectionMixin
+    EventLogSelectionDownstreamMixin
 )
-from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
 from edx.analytics.tasks.util import eventlog, opaque_key_util
+from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask, LoadEventFromMongoTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
 from edx.analytics.tasks.util.record import BooleanField, DateField, IntegerField, Record, StringField, DateTimeField, \
     LongTextField
-from edx.analytics.tasks.util.url import ExternalURL
 from edx.analytics.tasks.warehouse.load_internal_reporting_course_catalog import (
     LoadInternalReportingCourseCatalogMixin, CourseRecord
 )
-from edx.analytics.tasks.util.data import UniversalDataTask, LoadDataFromDatabaseTask, LoadEventFromLocalFileTask, \
-    LoadEventFromMongoTask
 
 log = logging.getLogger(__name__)
 DEACTIVATED = 'edx.course.enrollment.deactivated'

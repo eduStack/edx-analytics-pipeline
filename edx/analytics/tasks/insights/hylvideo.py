@@ -1,33 +1,25 @@
 """Tasks for aggregating statistics about video viewing."""
+import ciso8601
 import datetime
 import json
-import gzip
 import logging
 import math
 import re
-import textwrap
 import urllib
 from collections import namedtuple
-import pandas as pd
-import ciso8601
+
 import luigi
+import pandas as pd
 from luigi import configuration
-from luigi.hive import HiveQueryTask
 from luigi.parameter import DateIntervalParameter
 
-from edx.analytics.tasks.util.data import LoadEventFromMongoTask
-from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
 from edx.analytics.tasks.common.mysql_load import MysqlTableTask, IncrementalMysqlTableInsertTask, \
     get_mysql_query_results
-from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
+from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin
 from edx.analytics.tasks.util import eventlog
+from edx.analytics.tasks.util.data import LoadEventFromMongoTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
-from edx.analytics.tasks.util.hive import (
-    BareHiveTableTask, HivePartition, HivePartitionTask, HiveTableTask, WarehouseMixin, hive_database_name
-)
-from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.util.record import IntegerField, Record, StringField
-from edx.analytics.tasks.util.url import UncheckedExternalURL, get_target_from_url, url_path_join
 
 log = logging.getLogger(__name__)
 

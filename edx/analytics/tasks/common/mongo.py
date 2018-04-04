@@ -182,7 +182,7 @@ class LoadEventToMongoTask(MongoTask):
 
     def output(self):
         conn = get_mongo_connect(credentials_target=self.credential_task().output(),
-                                 database=self.databse)
+                                 database=self.database)
         targets = []
         for date in self.interval:
             targets.append(MongoTarget(connection=conn, date=date))

@@ -1382,6 +1382,7 @@ class ProgramCourseTableTask(OverwriteMysqlDownstreamMixin,
                              MysqlTableTask):
     """Hive table for program course."""
     overwrite = None
+    task = None
 
     def __init__(self, *args, **kwargs):
         super(ProgramCourseTableTask, self).__init__(*args, **kwargs)
@@ -1402,10 +1403,12 @@ class ProgramCourseTableTask(OverwriteMysqlDownstreamMixin,
                 yield row
 
     def requires_local(self):
-        return ProgramCourseDataTask(date=self.date,
-                                     api_root_url=self.api_root_url,
-                                     api_page_size=self.api_page_size,
-                                     overwrite=self.overwrite)
+        if not self.task:
+            self.task = ProgramCourseDataTask(date=self.date,
+                                              api_root_url=self.api_root_url,
+                                              api_page_size=self.api_page_size,
+                                              overwrite=self.overwrite)
+        return self.task
 
     def requires(self):
         for req in super(ProgramCourseTableTask, self).requires():

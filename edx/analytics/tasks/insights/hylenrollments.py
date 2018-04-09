@@ -1492,7 +1492,7 @@ class CourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
                         reporting_type=course_run.get('reporting_type'),
                     )
                     result.append(record.to_string_tuple())
-        log.info('result = {}'.format(result))
+        # log.info('result = {}'.format(result))
         return result
 
 

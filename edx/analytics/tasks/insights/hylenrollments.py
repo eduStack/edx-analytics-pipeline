@@ -1432,6 +1432,9 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
 
 class CourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
 
+    def complete(self):
+        return UniversalDataTask.complete(self)
+
     def init_env(self):
         super(CourseDataTask, self).init_env()
         self.client = EdxApiClient()
@@ -1486,7 +1489,7 @@ class CourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
                         announcement_time=DateTimeField().deserialize_from_string(course_run.get('announcement')),
                         reporting_type=course_run.get('reporting_type'),
                     )
-                    result.append(record)
+                    result.append(record.to_string_tuple())
         log.info('result = {}'.format(result))
         return result
 

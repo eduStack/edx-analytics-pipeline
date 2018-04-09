@@ -1423,6 +1423,7 @@ class ProgramCourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDat
         self.client = EdxApiClient()
 
     def load_data(self):
+        result = []
         short_codes = self.partner_short_codes if self.partner_short_codes else []
         for partner_short_code in short_codes:
             params = {
@@ -1462,7 +1463,9 @@ class ProgramCourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDat
                             partner_short_code=course.get('partner_short_code'),
                             program_slot_number=None,
                         )
-                        yield record
+                        result.append(record)
+        log.info('result = {}'.format(result))
+        return result
 
 
 @workflow_entry_point

@@ -1446,7 +1446,7 @@ class ProgramCourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDat
                 raise luigi.parameter.MissingParameterException("Missing either a partner_api_urls or an " +
                                                                 "api_root_url.")
 
-            url = url_path_join(api_root_url, 'courses') + '/'
+            url = url_path_join(api_root_url, 'course_runs') + '/'
             for response in self.client.paginated_get(url, params=params):
                 parsed_response = response.json()
                 for course in parsed_response.get('results', []):

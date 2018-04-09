@@ -1220,9 +1220,6 @@ class CourseTableTask(LoadInternalReportingCourseCatalogMixin,
                       OverwriteMysqlDownstreamMixin, MysqlTableTask):
     """Hive table for course catalog."""
 
-    def rows(self):
-        return []
-
     @property
     def table(self):
         return 'course_catalog'
@@ -1230,6 +1227,23 @@ class CourseTableTask(LoadInternalReportingCourseCatalogMixin,
     @property
     def columns(self):
         return CourseRecord.get_sql_schema()
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
+
+    def requires_local(self):
+        return CourseDataTask(date=self.date,
+                              api_root_url=self.api_root_url,
+                              api_page_size=self.api_page_size,
+                              overwrite=self.overwrite)
+
+    def requires(self):
+        for req in super(CourseTableTask, self).requires():
+            yield req
+        yield self.requires_local()
 
 
 class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, CourseSummaryEnrollmentDownstreamMixin,
@@ -1328,98 +1342,98 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
 
         yield course_by_mode_data_task
 
+#
+# class CourseProgramMetadataInsertToMysqlTask(OverwriteMysqlDownstreamMixin,
+#                                              CourseSummaryEnrollmentDownstreamMixin,
+#                                              MysqlTableTask):  # pragma: no cover
+#     """
+#     Creates/populates the `course_program_metadata` Result Store table.
+#
+#     Overwrite functionality is complex and configured through the OverwriteHiveAndMysqlDownstreamMixin, so we default
+#     the standard overwrite parameter to None.
+#     """
+#     overwrite = None
+#
+#     def __init__(self, *args, **kwargs):
+#         super(CourseProgramMetadataInsertToMysqlTask, self).__init__(*args, **kwargs)
+#         self.overwrite = self.overwrite_mysql
+#
+#     @property
+#     def table(self):
+#         return 'course_program_metadata'
+#
+#     @property
+#     def columns(self):
+#         return CourseProgramMetadataRecord.get_sql_schema()
+#
+#     @property
+#     def indexes(self):
+#         return [('course_id',)]
+#
+#     @property
+#     def insert_query(self):
+#         return super(CourseProgramMetadataInsertToMysqlTask, self).insert_query()
+#         """The query builder that controls the structure and fields inserted into the new table."""
+#         column_names = CourseProgramMetadataRecord.get_fields().keys()
+#         query = """
+#                 SELECT {columns}
+#                 FROM   program_course;
+#                 """.format(columns=','.join(column_names))
+#         return query
+#
+#     def requires(self):
+#         for req in super(CourseProgramMetadataInsertToMysqlTask, self).requires():
+#             yield req
+#         yield ProgramCourseTableTask(
+#             date=self.date,
+#             api_root_url=self.api_root_url,
+#             api_page_size=self.api_page_size,
+#         )
+#
+#
+# class ProgramCourseTableTask(OverwriteMysqlDownstreamMixin,
+#                              CourseSummaryEnrollmentDownstreamMixin,
+#                              MysqlTableTask):
+#     """Hive table for program course."""
+#     overwrite = None
+#     task = None
+#
+#     def __init__(self, *args, **kwargs):
+#         super(ProgramCourseTableTask, self).__init__(*args, **kwargs)
+#         self.overwrite = self.overwrite_mysql
+#
+#     @property
+#     def table(self):
+#         return 'program_course'
+#
+#     @property
+#     def columns(self):
+#         return ProgramCourseRecord.get_sql_schema()
+#
+#     def rows(self):
+#         require = self.requires_local()
+#         if require:
+#             for row in require.output():
+#                 yield row
+#
+#     def requires_local(self):
+#         if not self.task:
+#             self.task = CourseDataTask(date=self.date,
+#                                        api_root_url=self.api_root_url,
+#                                        api_page_size=self.api_page_size,
+#                                        overwrite=self.overwrite)
+#         return self.task
+#
+#     def requires(self):
+#         for req in super(ProgramCourseTableTask, self).requires():
+#             yield req
+#         yield self.requires_local()
 
-class CourseProgramMetadataInsertToMysqlTask(OverwriteMysqlDownstreamMixin,
-                                             CourseSummaryEnrollmentDownstreamMixin,
-                                             MysqlTableTask):  # pragma: no cover
-    """
-    Creates/populates the `course_program_metadata` Result Store table.
 
-    Overwrite functionality is complex and configured through the OverwriteHiveAndMysqlDownstreamMixin, so we default
-    the standard overwrite parameter to None.
-    """
-    overwrite = None
-
-    def __init__(self, *args, **kwargs):
-        super(CourseProgramMetadataInsertToMysqlTask, self).__init__(*args, **kwargs)
-        self.overwrite = self.overwrite_mysql
-
-    @property
-    def table(self):
-        return 'course_program_metadata'
-
-    @property
-    def columns(self):
-        return CourseProgramMetadataRecord.get_sql_schema()
-
-    @property
-    def indexes(self):
-        return [('course_id',)]
-
-    @property
-    def insert_query(self):
-        return super(CourseProgramMetadataInsertToMysqlTask, self).insert_query()
-        """The query builder that controls the structure and fields inserted into the new table."""
-        column_names = CourseProgramMetadataRecord.get_fields().keys()
-        query = """
-                SELECT {columns}
-                FROM   program_course;
-                """.format(columns=','.join(column_names))
-        return query
-
-    def requires(self):
-        for req in super(CourseProgramMetadataInsertToMysqlTask, self).requires():
-            yield req
-        yield ProgramCourseTableTask(
-            date=self.date,
-            api_root_url=self.api_root_url,
-            api_page_size=self.api_page_size,
-        )
-
-
-class ProgramCourseTableTask(OverwriteMysqlDownstreamMixin,
-                             CourseSummaryEnrollmentDownstreamMixin,
-                             MysqlTableTask):
-    """Hive table for program course."""
-    overwrite = None
-    task = None
-
-    def __init__(self, *args, **kwargs):
-        super(ProgramCourseTableTask, self).__init__(*args, **kwargs)
-        self.overwrite = self.overwrite_mysql
-
-    @property
-    def table(self):
-        return 'program_course'
-
-    @property
-    def columns(self):
-        return ProgramCourseRecord.get_sql_schema()
-
-    def rows(self):
-        require = self.requires_local()
-        if require:
-            for row in require.output():
-                yield row
-
-    def requires_local(self):
-        if not self.task:
-            self.task = ProgramCourseDataTask(date=self.date,
-                                              api_root_url=self.api_root_url,
-                                              api_page_size=self.api_page_size,
-                                              overwrite=self.overwrite)
-        return self.task
-
-    def requires(self):
-        for req in super(ProgramCourseTableTask, self).requires():
-            yield req
-        yield self.requires_local()
-
-
-class ProgramCourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
+class CourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
 
     def init_env(self):
-        super(ProgramCourseDataTask, self).init_env()
+        super(CourseDataTask, self).init_env()
         self.client = EdxApiClient()
 
     def load_data(self):
@@ -1446,24 +1460,33 @@ class ProgramCourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDat
                 raise luigi.parameter.MissingParameterException("Missing either a partner_api_urls or an " +
                                                                 "api_root_url.")
 
-            url = url_path_join(api_root_url, 'course_runs') + '/'
+            url = url_path_join(api_root_url, 'courses') + '/'
             for response in self.client.paginated_get(url, params=params):
                 parsed_response = response.json()
-                for course in parsed_response.get('results', []):
-                    course['partner_short_code'] = partner_short_code
-                    for program in course.get('programs', []):
-                        record = ProgramCourseRecord(
-                            program_id=program['uuid'],
-                            program_type=program['type'],
-                            program_title=program.get('title'),
-                            catalog_course=course['course'],
-                            catalog_course_title=course.get('title'),
-                            course_id=course['key'],
-                            org_id=get_org_id_for_course(course['key']),
-                            partner_short_code=course.get('partner_short_code'),
-                            program_slot_number=None,
-                        )
-                        result.append(record)
+                for course_run in parsed_response.get('results', []):
+                    course_run['partner_short_code'] = partner_short_code
+                    record = CourseRecord(
+                        course_id=course_run['id'],
+                        catalog_course=course_run['id'],
+                        catalog_course_title=course_run.get('name'),
+                        start_time=DateTimeField().deserialize_from_string(course_run.get('start')),
+                        end_time=DateTimeField().deserialize_from_string(course_run.get('end')),
+                        enrollment_start_time=DateTimeField().deserialize_from_string(
+                            course_run.get('enrollment_start')),
+                        enrollment_end_time=DateTimeField().deserialize_from_string(course_run.get('enrollment_end')),
+                        content_language=course_run.get('content_language'),
+                        pacing_type=course_run.get('pacing'),
+                        level_type=course_run.get('level_type'),
+                        availability=course_run.get('availability'),
+                        org_id=get_org_id_for_course(course_run['id']),
+                        partner_short_code=course_run.get('partner_short_code'),
+                        marketing_url=course_run.get('marketing_url'),
+                        min_effort=course_run.get('min_effort'),
+                        max_effort=course_run.get('max_effort'),
+                        announcement_time=DateTimeField().deserialize_from_string(course_run.get('announcement')),
+                        reporting_type=course_run.get('reporting_type'),
+                    )
+                    result.append(record)
         log.info('result = {}'.format(result))
         return result
 
@@ -1504,5 +1527,5 @@ class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, Over
             EnrollmentDailyMysqlTask(**enrollment_kwargs),
             CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
         ]
-        if self.enable_course_catalog:
-            yield CourseProgramMetadataInsertToMysqlTask(**course_summary_kwargs)
+        # if self.enable_course_catalog:
+        #     yield CourseProgramMetadataInsertToMysqlTask(**course_summary_kwargs)

@@ -4,6 +4,7 @@ import logging
 
 import luigi.task
 import pandas as pd
+from edx.analytics.tasks.util.opaque_key_util import get_org_id_for_course
 from luigi.parameter import DateIntervalParameter
 
 from edx.analytics.tasks.common.mysql_load import MysqlTableTask, \
@@ -12,13 +13,15 @@ from edx.analytics.tasks.common.pathutil import (
     EventLogSelectionDownstreamMixin
 )
 from edx.analytics.tasks.util import eventlog, opaque_key_util
-from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask, LoadEventFromMongoTask
+from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask, LoadEventFromMongoTask, UniversalDataTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
+from edx.analytics.tasks.util.edx_api_client import EdxApiClient
 from edx.analytics.tasks.util.record import BooleanField, DateField, IntegerField, Record, StringField, DateTimeField, \
     LongTextField
+from edx.analytics.tasks.util.url import url_path_join
 from edx.analytics.tasks.warehouse.load_internal_reporting_course_catalog import (
-    LoadInternalReportingCourseCatalogMixin, CourseRecord
-)
+    LoadInternalReportingCourseCatalogMixin, CourseRecord,
+    ProgramCourseRecord, CourseSubjectRecord)
 
 log = logging.getLogger(__name__)
 DEACTIVATED = 'edx.course.enrollment.deactivated'
@@ -502,6 +505,14 @@ class EnrollmentByModeRecord(Record):
     count = IntegerField(description='The number of learners with this mode in the course on this date.')
     cumulative_count = IntegerField(description='The count of learners with this mode that ever enrolled in this course'
                                                 ' on or before this date.')
+
+
+class CourseProgramMetadataRecord(Record):
+    """Represents a course run within a program for the result store."""
+    course_id = StringField(nullable=False, length=255)
+    program_id = StringField(nullable=False, length=36)
+    program_type = StringField(nullable=False, length=32)
+    program_title = StringField(nullable=True, length=255, normalize_whitespace=True)
 
 
 class CourseGradeByModeRecord(Record):
@@ -1318,6 +1329,139 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
         yield course_by_mode_data_task
 
 
+class CourseProgramMetadataInsertToMysqlTask(OverwriteMysqlDownstreamMixin,
+                                             CourseSummaryEnrollmentDownstreamMixin,
+                                             MysqlTableTask):  # pragma: no cover
+    """
+    Creates/populates the `course_program_metadata` Result Store table.
+
+    Overwrite functionality is complex and configured through the OverwriteHiveAndMysqlDownstreamMixin, so we default
+    the standard overwrite parameter to None.
+    """
+    overwrite = None
+
+    def __init__(self, *args, **kwargs):
+        super(CourseProgramMetadataInsertToMysqlTask, self).__init__(*args, **kwargs)
+        self.overwrite = self.overwrite_mysql
+
+    @property
+    def table(self):
+        return 'course_program_metadata'
+
+    @property
+    def columns(self):
+        return CourseProgramMetadataRecord.get_sql_schema()
+
+    @property
+    def indexes(self):
+        return [('course_id',)]
+
+    @property
+    def insert_query(self):
+        return super(CourseProgramMetadataInsertToMysqlTask, self).insert_query()
+        """The query builder that controls the structure and fields inserted into the new table."""
+        column_names = CourseProgramMetadataRecord.get_fields().keys()
+        query = """
+                SELECT {columns}
+                FROM   program_course;
+                """.format(columns=','.join(column_names))
+        return query
+
+    def requires(self):
+        for req in super(MysqlTableTask, self).requires():
+            yield req
+        yield ProgramCourseTableTask(
+            date=self.date,
+            api_root_url=self.api_root_url,
+            api_page_size=self.api_page_size,
+        )
+
+
+class ProgramCourseTableTask(OverwriteMysqlDownstreamMixin,
+                             CourseSummaryEnrollmentDownstreamMixin,
+                             MysqlTableTask):
+    """Hive table for program course."""
+    overwrite = None
+
+    def __init__(self, *args, **kwargs):
+        super(ProgramCourseTableTask, self).__init__(*args, **kwargs)
+        self.overwrite = self.overwrite_mysql
+
+    @property
+    def table(self):
+        return 'program_course'
+
+    @property
+    def columns(self):
+        return ProgramCourseRecord.get_sql_schema()
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
+
+    def requires_local(self):
+        return ProgramCourseDataTask(date=self.date,
+                                     api_root_url=self.api_root_url,
+                                     api_page_size=self.api_page_size,
+                                     overwrite=self.overwrite)
+
+    def requires(self):
+        for req in super(MysqlTableTask, self).requires():
+            yield req
+        yield self.requires_local()
+
+
+class ProgramCourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
+
+    def init_env(self):
+        super(ProgramCourseDataTask, self).init_env()
+        self.client = EdxApiClient()
+
+    def load_data(self):
+        short_codes = self.partner_short_codes if self.partner_short_codes else []
+        for partner_short_code in short_codes:
+            params = {
+                'limit': self.api_page_size,
+                'partner': partner_short_code,
+                'exclude_utm': 1,
+            }
+
+            if self.partner_api_urls:
+                url_index = short_codes.index(partner_short_code)
+
+                if url_index >= self.partner_api_urls.__len__():
+                    raise luigi.parameter.MissingParameterException(
+                        "Error!  Index of the partner short code from partner_short_codes exceeds the length of "
+                        "partner_api_urls.  These lists are not in sync!!!")
+                api_root_url = self.partner_api_urls[url_index]
+            elif self.api_root_url:
+                api_root_url = self.api_root_url
+            else:
+                raise luigi.parameter.MissingParameterException("Missing either a partner_api_urls or an " +
+                                                                "api_root_url.")
+
+            url = url_path_join(api_root_url, 'courses') + '/'
+            for response in self.client.paginated_get(url, params=params):
+                parsed_response = response.json()
+                for course in parsed_response.get('results', []):
+                    course['partner_short_code'] = partner_short_code
+                    for program in course.get('programs', []):
+                        record = ProgramCourseRecord(
+                            program_id=program['uuid'],
+                            program_type=program['type'],
+                            program_title=program.get('title'),
+                            catalog_course=course['course'],
+                            catalog_course_title=course.get('title'),
+                            course_id=course['key'],
+                            org_id=get_org_id_for_course(course['key']),
+                            partner_short_code=course.get('partner_short_code'),
+                            program_slot_number=None,
+                        )
+                        yield record
+
+
 @workflow_entry_point
 class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, OverwriteMysqlDownstreamMixin,
                                     luigi.WrapperTask):
@@ -1354,3 +1498,5 @@ class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, Over
             EnrollmentDailyMysqlTask(**enrollment_kwargs),
             CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
         ]
+        if self.enable_course_catalog:
+            yield CourseProgramMetadataInsertToMysqlTask(**course_summary_kwargs)

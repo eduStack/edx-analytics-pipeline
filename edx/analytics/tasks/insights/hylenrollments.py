@@ -1368,7 +1368,7 @@ class CourseProgramMetadataInsertToMysqlTask(OverwriteMysqlDownstreamMixin,
         return query
 
     def requires(self):
-        for req in super(MysqlTableTask, self).requires():
+        for req in super(CourseProgramMetadataInsertToMysqlTask, self).requires():
             yield req
         yield ProgramCourseTableTask(
             date=self.date,
@@ -1408,7 +1408,7 @@ class ProgramCourseTableTask(OverwriteMysqlDownstreamMixin,
                                      overwrite=self.overwrite)
 
     def requires(self):
-        for req in super(MysqlTableTask, self).requires():
+        for req in super(ProgramCourseTableTask, self).requires():
             yield req
         yield self.requires_local()
 

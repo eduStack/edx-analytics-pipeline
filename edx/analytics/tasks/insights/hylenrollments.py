@@ -1342,6 +1342,7 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
 
         yield course_by_mode_data_task
 
+
 #
 # class CourseProgramMetadataInsertToMysqlTask(OverwriteMysqlDownstreamMixin,
 #                                              CourseSummaryEnrollmentDownstreamMixin,
@@ -1464,7 +1465,8 @@ class CourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
                                                                 "api_root_url.")
 
             url = url_path_join(api_root_url, 'courses') + '/'
-            for response in self.client.paginated_get(url, params=params):
+            for response in self.client.paginated_get(url, params=params,
+                                                      pagination_key=lambda r: r['pagination']['next']):
                 parsed_response = response.json()
                 for course_run in parsed_response.get('results', []):
                     course_run['partner_short_code'] = partner_short_code

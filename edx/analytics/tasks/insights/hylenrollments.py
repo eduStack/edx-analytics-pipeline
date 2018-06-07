@@ -1342,6 +1342,7 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
 
         yield course_by_mode_data_task
 
+
 #
 # class CourseProgramMetadataInsertToMysqlTask(OverwriteMysqlDownstreamMixin,
 #                                              CourseSummaryEnrollmentDownstreamMixin,
@@ -1432,6 +1433,9 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
 
 class CourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
 
+    def complete(self):
+        return UniversalDataTask.complete(self)
+
     def init_env(self):
         super(CourseDataTask, self).init_env()
         self.client = EdxApiClient()
@@ -1461,7 +1465,8 @@ class CourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
                                                                 "api_root_url.")
 
             url = url_path_join(api_root_url, 'courses') + '/'
-            for response in self.client.paginated_get(url, params=params):
+            for response in self.client.paginated_get(url, params=params,
+                                                      pagination_key=lambda r: r['pagination']['next']):
                 parsed_response = response.json()
                 for course_run in parsed_response.get('results', []):
                     course_run['partner_short_code'] = partner_short_code
@@ -1486,8 +1491,8 @@ class CourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
                         announcement_time=DateTimeField().deserialize_from_string(course_run.get('announcement')),
                         reporting_type=course_run.get('reporting_type'),
                     )
-                    result.append(record)
-        log.info('result = {}'.format(result))
+                    result.append(record.to_string_tuple())
+        # log.info('result = {}'.format(result))
         return result
 
 

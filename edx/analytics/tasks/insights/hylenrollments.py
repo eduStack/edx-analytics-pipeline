@@ -1,26 +1,27 @@
 """Compute metrics related to user enrollments in courses"""
 import datetime
-import gzip
 import logging
 
 import luigi.task
 import pandas as pd
+from edx.analytics.tasks.util.opaque_key_util import get_org_id_for_course
 from luigi.parameter import DateIntervalParameter
 
-from edx.analytics.tasks.common.mysql_load import get_mysql_query_results, MysqlTableTask, \
+from edx.analytics.tasks.common.mysql_load import MysqlTableTask, \
     IncrementalMysqlTableInsertTask
 from edx.analytics.tasks.common.pathutil import (
-    EventLogSelectionDownstreamMixin, EventLogSelectionMixin
+    EventLogSelectionDownstreamMixin
 )
-from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
 from edx.analytics.tasks.util import eventlog, opaque_key_util
+from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask, LoadEventFromMongoTask, UniversalDataTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
+from edx.analytics.tasks.util.edx_api_client import EdxApiClient
 from edx.analytics.tasks.util.record import BooleanField, DateField, IntegerField, Record, StringField, DateTimeField, \
     LongTextField
-from edx.analytics.tasks.util.url import ExternalURL
+from edx.analytics.tasks.util.url import url_path_join
 from edx.analytics.tasks.warehouse.load_internal_reporting_course_catalog import (
-    LoadInternalReportingCourseCatalogMixin, CourseRecord
-)
+    LoadInternalReportingCourseCatalogMixin, CourseRecord,
+    ProgramCourseRecord, CourseSubjectRecord)
 
 log = logging.getLogger(__name__)
 DEACTIVATED = 'edx.course.enrollment.deactivated'
@@ -506,6 +507,14 @@ class EnrollmentByModeRecord(Record):
                                                 ' on or before this date.')
 
 
+class CourseProgramMetadataRecord(Record):
+    """Represents a course run within a program for the result store."""
+    course_id = StringField(nullable=False, length=255)
+    program_id = StringField(nullable=False, length=36)
+    program_type = StringField(nullable=False, length=32)
+    program_title = StringField(nullable=True, length=255, normalize_whitespace=True)
+
+
 class CourseGradeByModeRecord(Record):
     """Represents aggregated course grades by enrollment mode."""
     course_id = StringField(nullable=False, length=255, description='The course the learners are enrolled in.')
@@ -557,77 +566,50 @@ class ImportAuthUserProfileTask(MysqlTableTask):
             yield requires_local
 
 
-class AuthUserProfileSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(AuthUserProfileSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+class AuthUserProfileSelectionTask(LoadDataFromDatabaseTask):
 
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
-                SELECT 
-                    user_id,
-                    `name`,
-                    gender,
-                    year_of_birth,
-                    level_of_education,
-                    `language`,
-                    location,
-                    mailing_address,
-                    city,
-                    country,
-                    goals
-                FROM auth_userprofile
-            """
+                  SELECT 
+                      user_id,
+                      `name`,
+                      gender,
+                      year_of_birth,
+                      level_of_education,
+                      `language`,
+                      location,
+                      mailing_address,
+                      city,
+                      country,
+                      goals
+                  FROM auth_userprofile
+              """
         return query
 
-    def output(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
 
-    def run(self):
-        log.info('AuthUserProfileSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
-
-
-class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
+class CourseEnrollmentEventsTask(LoadEventFromMongoTask):
     """
     Task to extract enrollment events from eventlogs over a given interval.
     This would produce a different output file for each day within the interval
     containing that day's enrollment events only.
     """
-    completed = False
-    batch_counter_default = 1
-    # FILEPATH_PATTERN should match the output files defined by output_path_for_key().
-    FILEPATH_PATTERN = '.*?course_enrollment_events_(?P<date>\\d{4}-\\d{2}-\\d{2})'
-
-    # We use warehouse_path to generate the output path, so we make this a non-param.
-    output_root = None
-
     counter_category_name = 'Enrollment Events'
 
-    _counter_dict = {}
+    def event_filter(self):
+        return {
+            '$and': [
+                {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
+                {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
+                {'event_type': {'$in': [DEACTIVATED, ACTIVATED, MODE_CHANGED]}}
+            ]}
 
-    def __init__(self, *args, **kwargs):
-        super(CourseEnrollmentEventsTask, self).__init__(*args, **kwargs)
-
-    def get_event_row_from_line(self, line):
-        value = self.get_event_and_date_string(line)
+    def get_event_row_from_document(self, document):
+        value = self.get_event_and_date_string(document)
         if value is None:
             return
         event, date_string = value
+
         self.incr_counter(self.counter_category_name, 'Inputs with Dates', 1)
 
         event_type = event.get('event_type')
@@ -636,9 +618,9 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             self.incr_counter(self.counter_category_name, 'Discard Missing Event Type', 1)
             return
 
-        if event_type not in (DEACTIVATED, ACTIVATED, MODE_CHANGED):
-            self.incr_counter(self.counter_category_name, 'Discard Non-Enrollment Event Type', 1)
-            return
+        # if event_type not in (DEACTIVATED, ACTIVATED, MODE_CHANGED):
+        #     self.incr_counter(self.counter_category_name, 'Discard Non-Enrollment Event Type', 1)
+        #     return
 
         timestamp = eventlog.get_event_time_string(event)
         if timestamp is None:
@@ -675,33 +657,12 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
             return
 
         self.incr_counter(self.counter_category_name, 'Output From Mapper', 1)
-        return date_string, (course_id.encode('utf8'), user_id, timestamp, event_type, mode)
+        # reformat data for aggregation
+        return date_string, (course_id.encode('utf8'), user_id), timestamp, event_type, mode
 
-    def get_raw_events_from_log_file(self, input_file):
-        raw_events = []
-        for line in input_file:
-            event_row = self.get_event_row_from_line(line)
-            if not event_row:
-                continue
-            date_string, (course_id, user_id, timestamp, event_type, mode) = event_row
-            # reformat data for aggregation
-            event_row = (date_string, (course_id, user_id), timestamp, event_type, mode)
-            raw_events.append(event_row)
-        return raw_events
-
-    def output(self):
-        raw_events = []
-        for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as temp_file:
-                with gzip.GzipFile(fileobj=temp_file) as input_file:
-                    log.info('reading log file={}'.format(input_file))
-                    events = self.get_raw_events_from_log_file(input_file)
-                    if not events:
-                        continue
-                    raw_events.extend(events)
+    def processing(self, data):
         columns = ['date_string', 'course_id+user_id', 'timestamp', 'event_type', 'mode']
-
-        df = pd.DataFrame(data=raw_events, columns=columns)
+        df = pd.DataFrame(data=data, columns=columns)
 
         increment_counter = lambda counter_name: self.incr_counter(self.counter_category_name, counter_name,
                                                                    1)
@@ -713,60 +674,6 @@ class CourseEnrollmentEventsTask(EventLogSelectionMixin, luigi.Task):
                                                            increment_counter)
             for day_enrolled_record in event_stream_processor.days_enrolled():
                 yield day_enrolled_record
-
-    def _incr_counter(self, *args):
-        """ Increments a Hadoop counter
-
-        Note that this seems to be a bit slow, ~1 ms. Don't overuse this function by updating very frequently.
-        """
-        if len(args) == 2:
-            # backwards compatibility with existing hadoop jobs
-            group_name, count = args
-            # log.debug('reporter:counter:%s,%s' % (group_name, count))
-        else:
-            group, name, count = args
-            # log.debug('reporter:counter:%s,%s,%s' % (group, name, count))
-
-    def incr_counter(self, *args, **kwargs):
-        """ Increments a Hadoop counter
-
-        Since counters can be a bit slow to update, this batches the updates.
-        """
-        threshold = kwargs.get("threshold", self.batch_counter_default)
-        if len(args) == 2:
-            # backwards compatibility with existing hadoop jobs
-            group_name, count = args
-            key = (group_name,)
-        else:
-            group, name, count = args
-            key = (group, name)
-
-        ct = self._counter_dict.get(key, 0)
-        ct += count
-        if ct >= threshold:
-            new_arg = list(key) + [ct]
-            self._incr_counter(*new_arg)
-            ct = 0
-        self._counter_dict[key] = ct
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
-    def init_local(self):
-        self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
-        self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
-
-    def run(self):
-        self.init_local()
-        super(CourseEnrollmentEventsTask, self).run()
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        requires = super(CourseEnrollmentEventsTask, self).requires()
-        if isinstance(requires, luigi.Task):
-            yield requires
 
 
 class CourseEnrollmentTask(OverwriteMysqlDownstreamMixin, CourseEnrollmentDownstreamMixin,
@@ -1132,18 +1039,10 @@ class EnrollmentByEducationLevelMysqlTask(
         )
 
 
-class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(PersistentCourseGradeDataSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+class PersistentCourseGradeDataSelectionTask(LoadDataFromDatabaseTask):
 
     @property
-    def insert_query(self):
+    def query(self):
         """The query builder that controls the structure and fields inserted into the new table."""
         query = """
                     SELECT 
@@ -1159,21 +1058,6 @@ class PersistentCourseGradeDataSelectionTask(DatabaseImportMixin, luigi.Task):
                     FROM grades_persistentcoursegrade
                 """
         return query
-
-    def output(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('PersistentCourseGradeDataSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportPersistentCourseGradeTask(MysqlTableTask):
@@ -1336,9 +1220,6 @@ class CourseTableTask(LoadInternalReportingCourseCatalogMixin,
                       OverwriteMysqlDownstreamMixin, MysqlTableTask):
     """Hive table for course catalog."""
 
-    def rows(self):
-        return []
-
     @property
     def table(self):
         return 'course_catalog'
@@ -1346,6 +1227,23 @@ class CourseTableTask(LoadInternalReportingCourseCatalogMixin,
     @property
     def columns(self):
         return CourseRecord.get_sql_schema()
+
+    def rows(self):
+        require = self.requires_local()
+        if require:
+            for row in require.output():
+                yield row
+
+    def requires_local(self):
+        return CourseDataTask(date=self.date,
+                              api_root_url=self.api_root_url,
+                              api_page_size=self.api_page_size,
+                              overwrite=self.overwrite)
+
+    def requires(self):
+        for req in super(CourseTableTask, self).requires():
+            yield req
+        yield self.requires_local()
 
 
 class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, CourseSummaryEnrollmentDownstreamMixin,
@@ -1444,6 +1342,154 @@ class CourseMetaSummaryEnrollmentIntoMysql(OverwriteMysqlDownstreamMixin, Course
 
         yield course_by_mode_data_task
 
+#
+# class CourseProgramMetadataInsertToMysqlTask(OverwriteMysqlDownstreamMixin,
+#                                              CourseSummaryEnrollmentDownstreamMixin,
+#                                              MysqlTableTask):  # pragma: no cover
+#     """
+#     Creates/populates the `course_program_metadata` Result Store table.
+#
+#     Overwrite functionality is complex and configured through the OverwriteHiveAndMysqlDownstreamMixin, so we default
+#     the standard overwrite parameter to None.
+#     """
+#     overwrite = None
+#
+#     def __init__(self, *args, **kwargs):
+#         super(CourseProgramMetadataInsertToMysqlTask, self).__init__(*args, **kwargs)
+#         self.overwrite = self.overwrite_mysql
+#
+#     @property
+#     def table(self):
+#         return 'course_program_metadata'
+#
+#     @property
+#     def columns(self):
+#         return CourseProgramMetadataRecord.get_sql_schema()
+#
+#     @property
+#     def indexes(self):
+#         return [('course_id',)]
+#
+#     @property
+#     def insert_query(self):
+#         return super(CourseProgramMetadataInsertToMysqlTask, self).insert_query()
+#         """The query builder that controls the structure and fields inserted into the new table."""
+#         column_names = CourseProgramMetadataRecord.get_fields().keys()
+#         query = """
+#                 SELECT {columns}
+#                 FROM   program_course;
+#                 """.format(columns=','.join(column_names))
+#         return query
+#
+#     def requires(self):
+#         for req in super(CourseProgramMetadataInsertToMysqlTask, self).requires():
+#             yield req
+#         yield ProgramCourseTableTask(
+#             date=self.date,
+#             api_root_url=self.api_root_url,
+#             api_page_size=self.api_page_size,
+#         )
+#
+#
+# class ProgramCourseTableTask(OverwriteMysqlDownstreamMixin,
+#                              CourseSummaryEnrollmentDownstreamMixin,
+#                              MysqlTableTask):
+#     """Hive table for program course."""
+#     overwrite = None
+#     task = None
+#
+#     def __init__(self, *args, **kwargs):
+#         super(ProgramCourseTableTask, self).__init__(*args, **kwargs)
+#         self.overwrite = self.overwrite_mysql
+#
+#     @property
+#     def table(self):
+#         return 'program_course'
+#
+#     @property
+#     def columns(self):
+#         return ProgramCourseRecord.get_sql_schema()
+#
+#     def rows(self):
+#         require = self.requires_local()
+#         if require:
+#             for row in require.output():
+#                 yield row
+#
+#     def requires_local(self):
+#         if not self.task:
+#             self.task = CourseDataTask(date=self.date,
+#                                        api_root_url=self.api_root_url,
+#                                        api_page_size=self.api_page_size,
+#                                        overwrite=self.overwrite)
+#         return self.task
+#
+#     def requires(self):
+#         for req in super(ProgramCourseTableTask, self).requires():
+#             yield req
+#         yield self.requires_local()
+
+
+class CourseDataTask(CourseSummaryEnrollmentDownstreamMixin, UniversalDataTask):
+
+    def init_env(self):
+        super(CourseDataTask, self).init_env()
+        self.client = EdxApiClient()
+
+    def load_data(self):
+        result = []
+        short_codes = self.partner_short_codes if self.partner_short_codes else []
+        for partner_short_code in short_codes:
+            params = {
+                'limit': self.api_page_size,
+                'partner': partner_short_code,
+                'exclude_utm': 1,
+            }
+
+            if self.partner_api_urls:
+                url_index = short_codes.index(partner_short_code)
+
+                if url_index >= self.partner_api_urls.__len__():
+                    raise luigi.parameter.MissingParameterException(
+                        "Error!  Index of the partner short code from partner_short_codes exceeds the length of "
+                        "partner_api_urls.  These lists are not in sync!!!")
+                api_root_url = self.partner_api_urls[url_index]
+            elif self.api_root_url:
+                api_root_url = self.api_root_url
+            else:
+                raise luigi.parameter.MissingParameterException("Missing either a partner_api_urls or an " +
+                                                                "api_root_url.")
+
+            url = url_path_join(api_root_url, 'courses') + '/'
+            for response in self.client.paginated_get(url, params=params):
+                parsed_response = response.json()
+                for course_run in parsed_response.get('results', []):
+                    course_run['partner_short_code'] = partner_short_code
+                    record = CourseRecord(
+                        course_id=course_run['id'],
+                        catalog_course=course_run['id'],
+                        catalog_course_title=course_run.get('name'),
+                        start_time=DateTimeField().deserialize_from_string(course_run.get('start')),
+                        end_time=DateTimeField().deserialize_from_string(course_run.get('end')),
+                        enrollment_start_time=DateTimeField().deserialize_from_string(
+                            course_run.get('enrollment_start')),
+                        enrollment_end_time=DateTimeField().deserialize_from_string(course_run.get('enrollment_end')),
+                        content_language=course_run.get('content_language'),
+                        pacing_type=course_run.get('pacing'),
+                        level_type=course_run.get('level_type'),
+                        availability=course_run.get('availability'),
+                        org_id=get_org_id_for_course(course_run['id']),
+                        partner_short_code=course_run.get('partner_short_code'),
+                        marketing_url=course_run.get('marketing_url'),
+                        min_effort=course_run.get('min_effort'),
+                        max_effort=course_run.get('max_effort'),
+                        announcement_time=DateTimeField().deserialize_from_string(course_run.get('announcement')),
+                        reporting_type=course_run.get('reporting_type'),
+                    )
+                    result.append(record)
+        log.info('result = {}'.format(result))
+        return result
+
 
 @workflow_entry_point
 class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, OverwriteMysqlDownstreamMixin,
@@ -1481,3 +1527,5 @@ class HylImportEnrollmentsIntoMysql(CourseSummaryEnrollmentDownstreamMixin, Over
             EnrollmentDailyMysqlTask(**enrollment_kwargs),
             CourseMetaSummaryEnrollmentIntoMysql(**course_summary_kwargs),
         ]
+        # if self.enable_course_catalog:
+        #     yield CourseProgramMetadataInsertToMysqlTask(**course_summary_kwargs)

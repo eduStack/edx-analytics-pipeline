@@ -5,7 +5,6 @@ See ModuleEngagementWorkflowTask for more extensive documentation.
 """
 
 import datetime
-import gzip
 import logging
 import random
 from collections import defaultdict
@@ -14,24 +13,19 @@ import luigi.task
 import pandas as pd
 from luigi import date_interval
 
-from edx.analytics.tasks.util.elasticsearch_target import ElasticsearchTarget
 from edx.analytics.tasks.common.elasticsearch_load import ElasticsearchIndexTask, ElasticsearchIndexTaskMixin
-from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin
 from edx.analytics.tasks.common.mysql_load import IncrementalMysqlTableInsertTask, MysqlTableTask, \
     get_mysql_query_results
-from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
-from edx.analytics.tasks.insights.database_imports import (
-    DatabaseImportMixin
-)
+from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin
 from edx.analytics.tasks.insights.hylenrollments import ImportAuthUserProfileTask
 from edx.analytics.tasks.insights.hyllocation_per_course import ImportAuthUserTask
-from edx.analytics.tasks.insights.enrollments import ExternalCourseEnrollmentPartitionTask
 from edx.analytics.tasks.util import eventlog
+from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask, LoadEventFromMongoTask, UniversalDataTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
-from edx.analytics.tasks.util.hive import BareHiveTableTask, HivePartitionTask, WarehouseMixin, hive_database_name
+from edx.analytics.tasks.util.elasticsearch_target import ElasticsearchESTarget
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.util.record import DateField, FloatField, IntegerField, Record, StringField
-from edx.analytics.tasks.util.url import ExternalURL, get_target_from_url, url_path_join
+from edx.analytics.tasks.util.url import ExternalURL
 
 try:
     import numpy
@@ -140,7 +134,7 @@ class ModuleEngagementRosterRecord(Record):
     enrollment_mode = StringField(length=255, nullable=False,
                                   description='Learner is enrolled in the course with this mode. Example: verified.')
     enrollment_date = DateField(description='First date the learner enrolled in the course.')
-    cohort = StringField(length=255, nullable=False, description='Cohort the learner belongs to, can be null.')
+    cohort = StringField(length=255, description='Cohort the learner belongs to, can be null.')
     problem_attempts = IntegerField(description='Number of times the learner attempted any problem in the course.')
     problems_attempted = IntegerField(description='Number of unique problems the learner has ever attempted in the'
                                                   ' course.')
@@ -338,38 +332,41 @@ SEGMENT_HIGHLY_ENGAGED = 'highly_engaged'
 SEGMENT_STRUGGLING = 'struggling'
 
 
-class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, luigi.Task):
-    """
-    Process the event log and categorize user engagement with various types of content.
-
-    This emits one record for each type of interaction. Note that this is loosely defined. For example, for problems, it
-    will emit two records if the problem is correct (one for the "attempt" interaction and one for the "correct attempt"
-    interaction).
-
-    This task is intended to be run incrementally and populate a single Hive partition. Although time consuming to
-    bootstrap the table, it results in a significantly cleaner workflow. It is much clearer what the success and
-    failure conditions are for a task and the management of residual data is dramatically simplified. All of that said,
-    Hadoop is not designed to operate like this and it would be significantly more efficient to process a range of dates
-    at once. The choice was made to stick with the cleaner workflow since the steady-state is the same for both options
-    - in general we will only be processing one day of data at a time.
-    """
-
+class ModuleEngagementDataTask(OverwriteOutputMixin, LoadEventFromMongoTask):
     # Required parameters
-    date = luigi.DateParameter()
-    completed = False
+    # date = luigi.DateParameter()
     # Override superclass to disable this parameter
-    interval = None
-
+    # interval = None
     # Write the output directly to the final destination and rely on the _SUCCESS file to indicate whether or not it
     # is complete. Note that this is a custom extension to luigi.
     enable_direct_output = True
 
-    def __init__(self, *args, **kwargs):
-        super(ModuleEngagementDataTask, self).__init__(*args, **kwargs)
+    def init_env(self):
+        self.attempted_removal = True
+        # self.interval = date_interval.Date.from_date(self.date)
+        super(ModuleEngagementDataTask, self).init_env()
 
-        self.interval = date_interval.Date.from_date(self.date)
+    def event_filter(self):
+        filter = {
+            '$and': [
+                {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
+                {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
+                {'$or': [
+                    {'$and': [
+                        {'event_source': 'server'},
+                        {'event_type': 'problem_check'},
+                    ]},
+                    {'event_type': 'play_video'},
+                    {'$and': [
+                        {'event_type': {'$regex': '/^edx\.forum\./'}},
+                        {'event_type': {'$regex': '/\.created$/'}}
+                    ]}
+                ]},
+            ]}
+        return filter
 
-    def mapper(self, line):
+    def get_event_row_from_document(self, document):
+        line = document
         value = self.get_event_and_date_string(line)
         if value is None:
             return
@@ -438,25 +435,7 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
 
         return entity_id, entity_type, user_actions
 
-    def get_raw_events_from_log_file(self, input_file):
-        raw_events = []
-        for line in input_file:
-            event_row = self.mapper(line)
-            if not event_row:
-                continue
-            raw_events.extend(event_row)
-        return raw_events
-
-    def output(self):
-        raw_events = []
-        for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as temp_file:
-                with gzip.GzipFile(fileobj=temp_file) as input_file:
-                    log.info('reading log file={}'.format(input_file))
-                    events = self.get_raw_events_from_log_file(input_file)
-                    if not events:
-                        continue
-                    raw_events.extend(events)
+    def processing(self, raw_events):
         columns = ['record_without_count', 'count']
         # log.info('raw_events = {}'.format(raw_events))
         if len(raw_events) == 0:
@@ -469,38 +448,8 @@ class ModuleEngagementDataTask(EventLogSelectionMixin, OverwriteOutputMixin, lui
                 values = group.get_values()
                 yield (course_id, username, date, entity_type, entity_id, action, len(values))
 
-    def complete(self):
-        return self.completed
-        # if self.overwrite and not self.attempted_removal:
-        #     return False
-        # else:
-        #     return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
 
-    def init_local(self):
-        self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
-        self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
-
-    def run(self):
-        self.init_local()
-        super(ModuleEngagementDataTask, self).run()
-        if not self.completed:
-            self.completed = True
-        # self.remove_output_on_overwrite()
-        # output_target = self.output()
-        # if not self.complete() and output_target.exists():
-        #     output_target.remove()
-        # return super(ModuleEngagementDataTask, self).run()
-
-    def requires(self):
-        requires = super(ModuleEngagementDataTask, self).requires()
-        if isinstance(requires, luigi.Task):
-            yield requires
-
-    def incr_counter(self, param, param1, param2):
-        pass
-
-
-class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysqlTableInsertTask):
+class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, WeekIntervalMixin, IncrementalMysqlTableInsertTask):
     """The hive table for this engagement data."""
     allow_empty_insert = True
 
@@ -519,11 +468,12 @@ class ModuleEngagementTableTask(ModuleEngagementDownstreamMixin, IncrementalMysq
                 yield row
 
     def requires_local(self):
-        return ModuleEngagementDataTask(date=self.date)
+        return ModuleEngagementDataTask(interval=self.interval)
 
     @property
     def record_filter(self):
-        return "`date`='{date}'".format(date=self.date.isoformat())  # pylint: disable=no-member
+        return "'{date_a}' <= `date` and `date` <= '{date_b}'".format(date_a=self.interval.date_a.isoformat(),
+                                                                      date_b=self.interval.date_b.isoformat())  # pylint: disable=no-member
 
     def requires(self):
         for req in super(ModuleEngagementTableTask, self).requires():
@@ -585,9 +535,12 @@ class ModuleEngagementSummaryTableTask(WeekIntervalMixin, ModuleEngagementDownst
         yield self.requires_local()
 
     def requires_local(self):
-        return ModuleEngagementIntervalTask(
-            date=self.date,
-            overwrite_from_date=self.overwrite_from_date,
+        # return ModuleEngagementIntervalTask(
+        #     date=self.date,
+        #     overwrite_from_date=self.overwrite_from_date,
+        # )
+        return ModuleEngagementTableTask(
+            date=self.date
         )
 
     @property
@@ -897,19 +850,9 @@ class ModuleEngagementUserSegmentTableTask(ModuleEngagementDownstreamMixin, Mysq
                 self.high_metric_ranges[range_record.course_id][range_record.metric] = range_record
 
 
-class CourseUserGroupSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(CourseUserGroupSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
+class CourseUserGroupSelectionTask(LoadDataFromDatabaseTask):
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
             SELECT
                     `id`,
@@ -919,20 +862,6 @@ class CourseUserGroupSelectionTask(DatabaseImportMixin, luigi.Task):
             FROM course_groups_courseusergroup
             """
         return query
-
-    def output(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('CourseUserGroupSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportCourseUserGroupTask(MysqlTableTask):
@@ -981,19 +910,9 @@ class ImportCourseUserGroupTask(MysqlTableTask):
             yield requires_local
 
 
-class CourseUserGroupUsersSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(CourseUserGroupUsersSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
+class CourseUserGroupUsersSelectionTask(LoadDataFromDatabaseTask):
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
             SELECT
                     courseusergroup_id,
@@ -1001,20 +920,6 @@ class CourseUserGroupUsersSelectionTask(DatabaseImportMixin, luigi.Task):
             FROM course_groups_courseusergroup_users
             """
         return query
-
-    def output(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('CourseUserGroupUsersSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportCourseUserGroupUsersTask(MysqlTableTask):
@@ -1147,19 +1052,19 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
             {aup_goals}
         FROM course_enrollment ce
         INNER JOIN auth_user au
-            ON (ce.user_id = au.id)
+            ON (ce.user_id = au.user_id)
         INNER JOIN auth_userprofile aup
-            ON (au.id = aup.user_id)
+            ON (au.user_id = aup.user_id)
         LEFT OUTER JOIN (
             SELECT
                 cugu.user_id,
                 cug.course_id,
-                cug.name
+                cug.`name`
             FROM course_groups_courseusergroup_users cugu
             INNER JOIN course_groups_courseusergroup cug
                 ON (cugu.courseusergroup_id = cug.courseusergroup_id)
         ) cohort
-            ON (au.id = cohort.user_id AND ce.course_id = cohort.course_id)
+            ON (au.user_id = cohort.user_id AND ce.course_id = cohort.course_id)
         LEFT OUTER JOIN module_engagement_summary eng
             ON (ce.course_id = eng.course_id AND au.username = eng.username AND eng.end_date = '{end}')
         LEFT OUTER JOIN module_engagement_summary old_eng
@@ -1225,16 +1130,12 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
                 date=self.date,
                 overwrite_from_date=self.overwrite_from_date,
             ),
-            # ExternalCourseEnrollmentPartitionTask(
-            #     interval_end=self.date
-            # ),
             # CourseEnrollmentTask(
-            #     overwrite_mysql=self.overwrite_mysql,
+            #     overwrite_mysql=True,
             #     source=self.source,
             #     interval=self.interval,
-            #     pattern=self.pattern,
-            #     overwrite_n_days=self.overwrite_n_days
-            # )
+            #     pattern=self.pattern
+            # ),
             ImportAuthUserTask(),
             ImportCourseUserGroupTask(),
             ImportCourseUserGroupUsersTask(),
@@ -1242,7 +1143,7 @@ class ModuleEngagementRosterPartitionTask(WeekIntervalMixin, ModuleEngagementDow
         )
 
 
-class ModuleEngagementRosterIndexTask(luigi.Task, ElasticsearchIndexTaskMixin, ModuleEngagementDownstreamMixin,
+class ModuleEngagementRosterIndexTask(UniversalDataTask, ElasticsearchIndexTaskMixin, ModuleEngagementDownstreamMixin,
                                       ModuleEngagementRosterIndexDownstreamMixin):
     """Load the roster data into elasticsearch for rapid query."""
 
@@ -1264,10 +1165,11 @@ class ModuleEngagementRosterIndexTask(luigi.Task, ElasticsearchIndexTaskMixin, M
     )
     index = alias
 
-    def __init__(self, *args, **kwargs):
-        super(ModuleEngagementRosterIndexTask, self).__init__(*args, **kwargs)
-        self.batch_index = 0
+    def init_env(self):
         self.indexes_for_alias = set()
+        self.batch_index = 0
+        self.index = self.alias + '_' + str(hash(self.update_id()))
+        self.init_es_client()
 
     def requires_local(self):
         return ModuleEngagementRosterPartitionTask(
@@ -1284,82 +1186,9 @@ class ModuleEngagementRosterIndexTask(luigi.Task, ElasticsearchIndexTaskMixin, M
         """Generate the elasticsearch mapping from the record schema."""
         return ModuleEngagementRosterRecord.get_elasticsearch_properties()
 
-    def output(self):
-        return ElasticsearchTarget(
-            client=self.create_elasticsearch_client(),
-            index=self.alias,
-            doc_type=self.doc_type,
-            update_id=self.update_id()
-        )
-
     @property
     def doc_type(self):
         return 'roster_entry'
-
-    def insert_data_to_es(self):
-        query = """
-        SELECT 
-            course_id, 
-            username, 
-            start_date, 
-            end_date, 
-            email, 
-            `name`, 
-            enrollment_mode, 
-            enrollment_date, 
-            cohort, 
-            problem_attempts, 
-            problems_attempted, 
-            problems_completed, 
-            problem_attempts_per_completed, 
-            videos_viewed, 
-            discussion_contributions, 
-            segments, 
-            attempt_ratio_order, 
-            user_id, 
-            `language`, 
-            location, 
-            year_of_birth, 
-            level_of_education, 
-            gender, 
-            mailing_address, 
-            city, 
-            country, 
-            goals
-        FROM module_engagement_roster
-        """
-        res = get_mysql_query_results(self.credentials, self.database, query)
-        lines = []
-        for row in res:
-            record = ModuleEngagementRosterRecord(course_id=row[0],
-                                                  username=row[1],
-                                                  start_date=row[2],
-                                                  end_date=row[3],
-                                                  email=row[4],
-                                                  name=row[5],
-                                                  enrollment_mode=row[6],
-                                                  enrollment_date=row[7],
-                                                  cohort=row[8],
-                                                  problem_attempts=row[9],
-                                                  problems_attempted=row[10],
-                                                  problems_completed=row[11],
-                                                  problem_attempts_per_completed=row[12],
-                                                  videos_viewed=row[13],
-                                                  discussion_contributions=row[14],
-                                                  segments=row[15],
-                                                  attempt_ratio_order=row[16],
-                                                  user_id=row[17],
-                                                  language=row[18],
-                                                  location=row[19],
-                                                  year_of_birth=row[20],
-                                                  level_of_education=row[21],
-                                                  gender=row[22],
-                                                  mailing_address=row[23],
-                                                  city=row[24],
-                                                  country=row[25],
-                                                  goals=row[26])
-            lines.append(record)
-        self.update_index(lines)
 
     def document_generator(self, lines):
         for record in lines:
@@ -1401,12 +1230,86 @@ class ModuleEngagementRosterIndexTask(luigi.Task, ElasticsearchIndexTaskMixin, M
         yield ExternalURL(url=self.credentials)
         yield self.requires_local()
 
+    def load_data(self):
+        query = """
+               SELECT 
+                   course_id, 
+                   username, 
+                   start_date, 
+                   end_date, 
+                   email, 
+                   `name`, 
+                   enrollment_mode, 
+                   enrollment_date, 
+                   cohort, 
+                   problem_attempts, 
+                   problems_attempted, 
+                   problems_completed, 
+                   problem_attempts_per_completed, 
+                   videos_viewed, 
+                   discussion_contributions, 
+                   segments, 
+                   attempt_ratio_order, 
+                   user_id, 
+                   `language`, 
+                   location, 
+                   year_of_birth, 
+                   level_of_education, 
+                   gender, 
+                   mailing_address, 
+                   city, 
+                   country, 
+                   goals
+               FROM module_engagement_roster
+               """
+        res = get_mysql_query_results(self.credentials, self.database, query)
+        return res
+
+    def processing(self, data):
+        lines = []
+        for row in data:
+            record = ModuleEngagementRosterRecord(course_id=row[0],
+                                                  username=row[1],
+                                                  start_date=row[2],
+                                                  end_date=row[3],
+                                                  email=row[4],
+                                                  name=row[5],
+                                                  enrollment_mode=row[6],
+                                                  enrollment_date=row[7],
+                                                  cohort=row[8],
+                                                  problem_attempts=row[9],
+                                                  problems_attempted=row[10],
+                                                  problems_completed=row[11],
+                                                  problem_attempts_per_completed=row[12],
+                                                  videos_viewed=row[13],
+                                                  discussion_contributions=row[14],
+                                                  segments=row[15],
+                                                  attempt_ratio_order=row[16],
+                                                  user_id=row[17],
+                                                  language=row[18],
+                                                  location=row[19],
+                                                  year_of_birth=row[20],
+                                                  level_of_education=row[21],
+                                                  gender=row[22],
+                                                  mailing_address=row[23],
+                                                  city=row[24],
+                                                  country=row[25],
+                                                  goals=row[26])
+            lines.append(record)
+        return lines
+
+    def output(self):
+        return ElasticsearchESTarget(
+            client=self.create_elasticsearch_client(),
+            index=self.alias,
+            doc_type=self.doc_type,
+            update_id=self.update_id()
+        )
+
     def run(self):
         try:
-            self.index = self.alias + '_' + str(hash(self.update_id()))
             super(ModuleEngagementRosterIndexTask, self).run()
-            self.init_es_client()
-            self.insert_data_to_es()
+            self.update_index(self.result)
         except Exception:  # pylint: disable=broad-except
             self.rollback()
             raise

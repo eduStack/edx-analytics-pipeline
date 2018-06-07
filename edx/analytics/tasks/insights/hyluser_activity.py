@@ -1,17 +1,18 @@
 """Categorize activity of users."""
 
 import datetime
-import gzip
 import logging
+import re
 from collections import Counter
 
 import luigi
 import luigi.date_interval
 
 import edx.analytics.tasks.util.eventlog as eventlog
-from edx.analytics.tasks.common.mysql_load import get_mysql_query_results, IncrementalMysqlTableInsertTask
-from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
+from edx.analytics.tasks.common.mysql_load import IncrementalMysqlTableInsertTask
+from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin
 from edx.analytics.tasks.insights.calendar_task import MysqlCalendarTableTask
+from edx.analytics.tasks.util.data import LoadEventFromMongoTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.util.weekly_interval import WeeklyIntervalMixin
@@ -24,20 +25,23 @@ PLAY_VIDEO_LABEL = "PLAYED_VIDEO"
 POST_FORUM_LABEL = "POSTED_FORUM"
 
 
-class UserActivityTask(OverwriteOutputMixin, EventLogSelectionMixin, luigi.Task):
+class UserActivityTask(OverwriteOutputMixin, LoadEventFromMongoTask):
     """
-    Categorize activity of users.
+      Categorize activity of users.
 
-    Analyze the history of user actions and categorize their activity. Note that categories are not mutually exclusive.
-    A single event may belong to multiple categories. For example, we define a generic "ACTIVE" category that refers
-    to any event that has a course_id associated with it, but is not an enrollment event. Other events, such as a
-    video play event, will also belong to other categories.
+      Analyze the history of user actions and categorize their activity. Note that categories are not mutually exclusive.
+      A single event may belong to multiple categories. For example, we define a generic "ACTIVE" category that refers
+      to any event that has a course_id associated with it, but is not an enrollment event. Other events, such as a
+      video play event, will also belong to other categories.
 
-    The output from this job is a table that represents the number of events seen for each user in each course in each
-    category on each day.
+      The output from this job is a table that represents the number of events seen for each user in each course in each
+      category on each day.
 
-    """
-    completed = False
+      """
+
+    def __init__(self, *args, **kwargs):
+        super(UserActivityTask, self).__init__(*args, **kwargs)
+        self.attempted_removal = True
 
     def get_predicate_labels(self, event):
         """Creates labels by applying hardcoded predicates to a single event."""
@@ -92,67 +96,57 @@ class UserActivityTask(OverwriteOutputMixin, EventLogSelectionMixin, luigi.Task)
         else:
             return values[0].encode('utf8')
 
-    def get_raw_events_from_log_file(self, input_file):
-        raw_events = []
-        for line in input_file:
-            event_row = self.get_event_and_date_string(line)
-            if not event_row:
-                continue
-            event, date_string = event_row
+    def event_filter(self):
+        filter = {
+            '$and': [
+                {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
+                {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
+                {'$or': [
+                    {'event_source': {'$not': {'$eq': 'task'}}},
+                    {'event_type': {'$not': re.compile('^edx\.course\.enrollment\.')}},
+                    {'$and': [
+                        {'event_source': 'server'},
+                        {'$or': [
+                            {'event_type': 'problem_check'},
+                            {'$and': [
+                                {'event_type': {'$regex': '/^edx\.forum\./'}},
+                                {'event_type': {'$regex': '/\.created$/'}}
+                            ]}
+                        ]}
+                    ]},
+                    {'$and': [
+                        {'event_source': {'$in': ['browser', 'mobile']}},
+                        {'event_type': 'play_video'}
+                    ]}
+                ]},
+            ]}
+        return filter
 
-            username = event.get('username', '').strip()
-            if not username:
-                continue
+    def get_event_row_from_document(self, document):
+        event_and_date_string = self.get_event_and_date_string(document)
+        if not event_and_date_string:
+            return
+        event, date_string = event_and_date_string
 
-            course_id = eventlog.get_course_id(event)
-            if not course_id:
-                continue
+        username = event.get('username', '').strip()
+        if not username:
+            return
 
-            for label in self.get_predicate_labels(event):
-                event_row = self._encode_tuple((course_id, username, date_string, label))
-                raw_events.append(event_row)
-        return raw_events
+        course_id = eventlog.get_course_id(event)
+        if not course_id:
+            return
 
-    def output(self):
-        raw_events = []
-        for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as temp_file:
-                with gzip.GzipFile(fileobj=temp_file) as input_file:
-                    log.info('reading log file={}'.format(input_file))
-                    events = self.get_raw_events_from_log_file(input_file)
-                    if not events:
-                        continue
-                    raw_events.extend(events)
-        # (date_string, self._encode_tuple((course_id, username, date_string, label)))
-        # return [
-        #     ('course_id', 'VARCHAR(255) NOT NULL'),
-        #     ('username', 'VARCHAR(255) NOT NULL'),
-        #     ('date', 'DATE NOT NULL'),
-        #     ('category', 'VARCHAR(255) NOT NULL'),
-        #     ('count', 'INT(11) NOT NULL'),
-        # ]
+        events = []
+        for label in self.get_predicate_labels(event):
+            event_row = self._encode_tuple((course_id, username, date_string, label))
+            events.append(event_row)
+        return events
+
+    def processing(self, raw_events):
         counter = Counter(raw_events)
         for key, num_events in counter.iteritems():
             course_id, username, date_string, label = key
             yield (course_id, username, date_string, label, num_events)
-
-    def init_local(self):
-        self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
-        self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
-
-    def run(self):
-        self.init_local()
-        super(UserActivityTask, self).run()
-        if not self.completed:
-            self.completed = True
-
-    def complete(self):
-        return self.completed
-
-    def requires(self):
-        requires = super(UserActivityTask, self).requires()
-        if isinstance(requires, luigi.Task):
-            yield requires
 
 
 class UserActivityDownstreamMixin(EventLogSelectionDownstreamMixin):
@@ -217,7 +211,8 @@ class UserActivityTableTask(UserActivityDownstreamMixin, IncrementalMysqlTableIn
 
 
 @workflow_entry_point
-class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownstreamMixin, IncrementalMysqlTableInsertTask):
+class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownstreamMixin,
+                                         IncrementalMysqlTableInsertTask):
     """
     Creates/populates the `course_activity` Result store table.
     """
@@ -293,12 +288,13 @@ class HylInsertToMysqlCourseActivityTask(WeeklyIntervalMixin, UserActivityDownst
         ]
 
     def requires(self):
+        overwrite_interval = None
         if self.overwrite_n_days > 0:
             overwrite_from_date = self.end_date - datetime.timedelta(days=self.overwrite_n_days)
             overwrite_interval = luigi.date_interval.Custom(overwrite_from_date, self.end_date)
         yield (
             UserActivityTableTask(
-                interval=overwrite_interval,
+                interval=self.interval if overwrite_interval is None else overwrite_interval,
                 overwrite=True,
             ),
             MysqlCalendarTableTask()

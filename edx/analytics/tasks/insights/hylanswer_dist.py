@@ -17,6 +17,7 @@ from luigi.configuration import get_config
 
 import edx.analytics.tasks.util.eventlog as eventlog
 import edx.analytics.tasks.util.opaque_key_util as opaque_key_util
+from edx.analytics.tasks.util.data import LoadEventFromMongoTask
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
 from edx.analytics.tasks.common.mysql_load import MysqlInsertTaskMixin, MysqlTableTask
 from edx.analytics.tasks.common.pathutil import PathSetTask
@@ -214,11 +215,11 @@ def get_problem_check_event(line_or_event):
     return key, value
 
 
-class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
-    completed = False
+class ProblemCheckEvent(AnswerDistributionDownstreamMixin, LoadEventFromMongoTask):
+    interval = None
 
-    def complete(self):
-        return self.completed
+    def init_env(self):
+        pass
 
     def is_hidden_answer(self, answer_id):
         """Check Id to identify hidden kinds of values."""
@@ -240,18 +241,6 @@ class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
             return True
 
         return False
-
-    def get_raw_events_from_log_file(self, input_file):
-        raw_events = []
-        for line in input_file:
-            event_row = get_problem_check_event(line)
-            if not event_row:
-                continue
-
-            (course_id, problem_id, username), (timestamp, problem_check_info) = event_row
-            event_row = (course_id, problem_id, username, timestamp, problem_check_info)
-            raw_events.append(event_row)
-        return raw_events
 
     def _generate_answers(self, event_string, attempt_category):
         """
@@ -351,16 +340,24 @@ class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
 
         return result
 
-    def output(self):
-        raw_events = []
-        for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as temp_file:
-                with gzip.GzipFile(fileobj=temp_file) as input_file:
-                    log.info('reading log file={}'.format(input_file))
-                    events = self.get_raw_events_from_log_file(input_file)
-                    if not events:
-                        continue
-                    raw_events.extend(events)
+    def event_filter(self):
+        filter = {
+            '$and': [
+                {'event_type': 'problem_check'},
+                {'event_source': 'server'}
+            ]}
+        return filter
+
+    def get_event_row_from_document(self, document):
+        event_row = get_problem_check_event(document)
+        if not event_row:
+            return
+
+        (course_id, problem_id, username), (timestamp, problem_check_info) = event_row
+        event_row = (course_id, problem_id, username, timestamp, problem_check_info)
+        return event_row
+
+    def processing(self, raw_events):
         columns = ['course_id', 'problem_id', 'username', 'timestamp', 'problem_check_info']
         # log.info('raw_events = {}'.format(raw_events))
         df = pd.DataFrame(data=raw_events, columns=columns)
@@ -382,13 +379,6 @@ class ProblemCheckEvent(AnswerDistributionDownstreamMixin, luigi.Task):
                 result.append(answer)
         # log.info('result = {}'.format(result))
         return result
-
-    def run(self):
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield PathSetTask(self.src, self.include, self.manifest)
 
 
 class AnswerDistributionPerCourse(AnswerDistributionDownstreamMixin, luigi.Task):

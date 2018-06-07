@@ -1,31 +1,25 @@
 """Tasks for aggregating statistics about video viewing."""
+import ciso8601
 import datetime
 import json
-import gzip
 import logging
 import math
 import re
-import textwrap
 import urllib
 from collections import namedtuple
-import pandas as pd
-import ciso8601
+
 import luigi
+import pandas as pd
 from luigi import configuration
-from luigi.hive import HiveQueryTask
 from luigi.parameter import DateIntervalParameter
 
-from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
-from edx.analytics.tasks.common.mysql_load import MysqlTableTask, IncrementalMysqlTableInsertTask, get_mysql_query_results
-from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
+from edx.analytics.tasks.common.mysql_load import MysqlTableTask, IncrementalMysqlTableInsertTask, \
+    get_mysql_query_results
+from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin
 from edx.analytics.tasks.util import eventlog
+from edx.analytics.tasks.util.data import LoadEventFromMongoTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
-from edx.analytics.tasks.util.hive import (
-    BareHiveTableTask, HivePartition, HivePartitionTask, HiveTableTask, WarehouseMixin, hive_database_name
-)
-from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.util.record import IntegerField, Record, StringField
-from edx.analytics.tasks.util.url import UncheckedExternalURL, get_target_from_url, url_path_join
 
 log = logging.getLogger(__name__)
 
@@ -148,18 +142,16 @@ class VideoTableDownstreamMixin(EventLogSelectionDownstreamMixin):
     )
 
 
-class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Task):
-    completed = False
+class VideoUsageTask(VideoTableDownstreamMixin, LoadEventFromMongoTask):
+    counter_category_name = 'Video Events'
     # Cache for storing duration values fetched from Youtube.
     # Persist this across calls to the reducer.
     video_durations = {}
 
-    counter_category_name = 'Video Events'
-    _counter_dict = {}
-    batch_counter_default = 1
-
-    def complete(self):
-        return self.completed
+    def init_env(self):
+        super(VideoUsageTask, self).init_env()
+        # Providing an api_key is optional.
+        self.api_key = configuration.get_config().get('google', 'api_key', None)
 
     def _check_time_offset(self, time_value, line):
         """Check that time can be converted to a float, and has a reasonable value."""
@@ -199,51 +191,81 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
 
         return time_value
 
-    def get_event_and_date_string(self, line):
-        """Default mapper implementation, that always outputs the log line, but with a configurable key."""
-        event = eventlog.parse_json_event(line)
-        if event is None:
-            self.incr_counter('Event', 'Discard Unparseable Event', 1)
-            return None
+    def get_video_duration(self, youtube_id):
+        """
+        For youtube videos, queries Google API for video duration information.
 
-        event_time = self.get_event_time(event)
-        if not event_time:
-            self.incr_counter('Event', 'Discard Missing Time Field', 1)
-            return None
+        This returns an "unknown" duration flag if no API key has been defined, or if the query fails.
+        """
+        duration = VIDEO_UNKNOWN_DURATION
+        if self.api_key is None:
+            return duration
 
-        # Don't use strptime to parse the date, it is extremely slow
-        # to do so. Instead rely on alphanumeric comparisons.  The
-        # timestamp is ISO8601 formatted, so dates will look like
-        # %Y-%m-%d.  For example: 2014-05-20.
-        date_string = event_time.split("T")[0]
+        # Slow: self.incr_counter(self.counter_category_name, 'Subset Calls to Youtube API', 1)
+        video_file = None
+        try:
+            video_url = "https://www.googleapis.com/youtube/v3/videos?id={0}&part=contentDetails&key={1}".format(
+                youtube_id, self.api_key
+            )
+            video_file = urllib.urlopen(video_url)
+            content = json.load(video_file)
+            items = content.get('items', [])
+            if len(items) > 0:
+                duration_str = items[0].get(
+                    'contentDetails', {'duration': 'MISSING_CONTENTDETAILS'}
+                ).get('duration', 'MISSING_DURATION')
+                matcher = re.match(r'PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?', duration_str)
+                if not matcher:
+                    log.error('Unable to parse duration returned for video %s: %s', youtube_id, duration_str)
+                    # Slow: self.incr_counter(self.counter_category_name, 'Quality Unparseable Response From Youtube API', 1)
+                else:
+                    duration_secs = int(matcher.group('hours') or 0) * 3600
+                    duration_secs += int(matcher.group('minutes') or 0) * 60
+                    duration_secs += int(matcher.group('seconds') or 0)
+                    duration = duration_secs
+                    # Slow: self.incr_counter(self.counter_category_name, 'Subset Calls to Youtube API Succeeding', 1)
+            else:
+                log.error('Unable to find items in response to duration request for youtube video: %s', youtube_id)
+                # Slow: self.incr_counter(self.counter_category_name, 'Quality No Items In Response From Youtube API', 1)
+        except Exception:  # pylint: disable=broad-except
+            log.exception("Unrecognized response from Youtube API")
+            # Slow: self.incr_counter(self.counter_category_name, 'Quality Unrecognized Response From Youtube API', 1)
+        finally:
+            if video_file is not None:
+                video_file.close()
 
-        if date_string < self.lower_bound_date_string or date_string >= self.upper_bound_date_string:
-            # Slow: self.incr_counter('Event', 'Discard Outside Date Interval', 1)
-            return None
+        return duration
 
-        return event, date_string
+    def event_filter(self):
+        filter = {
+            '$and': [
+                {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
+                {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
+                {'event_type': {'$in': list(VIDEO_EVENT_TYPES)}}
+            ]}
+        return filter
 
-    def get_event_row_from_line(self, line):
+    def get_event_row_from_document(self, document):
         # Add a filter here to permit quicker rejection of unrelated events.
-        if VIDEO_EVENT_MINIMUM_STRING not in line:
-            # self.incr_counter(self.counter_category_name, 'Discard Missing Video String', 1)
-            return
-
-        value = self.get_event_and_date_string(line)
+        # if VIDEO_EVENT_MINIMUM_STRING not in document:
+        #     # self.incr_counter(self.counter_category_name, 'Discard Missing Video String', 1)
+        #     return
+        line = document
+        value = self.get_event_and_date_string(document)
         if value is None:
             return
         event, _date_string = value
         # self.incr_counter(self.counter_category_name, 'Inputs with Dates', 1)
 
         event_type = event.get('event_type')
-        if event_type is None:
-            log.error("encountered event with no event_type: %s", event)
-            self.incr_counter(self.counter_category_name, 'Discard Missing Event Type', 1)
-            return
-
-        if event_type not in VIDEO_EVENT_TYPES:
-            # self.incr_counter(self.counter_category_name, 'Discard Non-Video Event Type', 1)
-            return
+        # if event_type is None:
+        #     log.error("encountered event with no event_type: %s", event)
+        #     self.incr_counter(self.counter_category_name, 'Discard Missing Event Type', 1)
+        #     return
+        #
+        # if event_type not in VIDEO_EVENT_TYPES:
+        #     # self.incr_counter(self.counter_category_name, 'Discard Non-Video Event Type', 1)
+        #     return
 
         # self.incr_counter(self.counter_category_name, 'Input Video Events', 1)
 
@@ -337,35 +359,7 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
             timestamp, event_type, current_time, old_time, youtube_id, video_duration
         )
 
-    def get_raw_events_from_log_file(self, input_file):
-        raw_events = []
-        for line in input_file:
-            event_row = self.get_event_row_from_line(line)
-            if not event_row:
-                continue
-            # (
-            #     username, course_id, encoded_module_id,
-            #     timestamp, event_type, current_time, old_time, youtube_id, video_duration
-            # ) = event_row
-            # # reformat data for aggregation
-            # event_row = (
-            #     (course_id, encoded_module_id),
-            #     (timestamp, event_type, current_time, old_time, youtube_id, video_duration)
-            # )
-            raw_events.append(event_row)
-        return raw_events
-
-    def output(self):
-
-        raw_events = []
-        for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as temp_file:
-                with gzip.GzipFile(fileobj=temp_file) as input_file:
-                    log.info('reading log file={}'.format(input_file))
-                    events = self.get_raw_events_from_log_file(input_file)
-                    if not events:
-                        continue
-                    raw_events.extend(events)
+    def processing(self, raw_events):
 
         columns = ['username', 'course_id', 'encoded_module_id', 'timestamp', 'event_type', 'current_time', 'old_time',
                    'youtube_id', 'video_duration']
@@ -515,105 +509,6 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
                 # Slow: self.incr_counter(self.counter_category_name, 'Discard Viewing Start', 1)
                 # Slow: self.incr_counter(self.counter_category_name, 'Discard Viewing', 1)
                 pass
-
-    def _incr_counter(self, *args):
-        """ Increments a Hadoop counter
-
-        Note that this seems to be a bit slow, ~1 ms. Don't overuse this function by updating very frequently.
-        """
-        if len(args) == 2:
-            # backwards compatibility with existing hadoop jobs
-            group_name, count = args
-            # log.debug('reporter:counter:%s,%s' % (group_name, count))
-        else:
-            group, name, count = args
-            # log.debug('reporter:counter:%s,%s,%s' % (group, name, count))
-
-    def incr_counter(self, *args, **kwargs):
-        """ Increments a Hadoop counter
-
-        Since counters can be a bit slow to update, this batches the updates.
-        """
-        threshold = kwargs.get("threshold", self.batch_counter_default)
-        if len(args) == 2:
-            # backwards compatibility with existing hadoop jobs
-            group_name, count = args
-            key = (group_name,)
-        else:
-            group, name, count = args
-            key = (group, name)
-
-        ct = self._counter_dict.get(key, 0)
-        ct += count
-        if ct >= threshold:
-            new_arg = list(key) + [ct]
-            self._incr_counter(*new_arg)
-            ct = 0
-        self._counter_dict[key] = ct
-
-    def init_local(self):
-        # Providing an api_key is optional.
-        self.api_key = configuration.get_config().get('google', 'api_key', None)
-        # Reset this (mostly for the sake of tests).
-        self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
-        self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
-
-    def run(self):
-        log.info('test VideoUsageTask')
-        self.init_local()
-        super(VideoUsageTask, self).run()
-        if self.completed is False:
-            self.completed = True
-
-    def requires(self):
-        requires = super(VideoUsageTask, self).requires()
-        if isinstance(requires, luigi.Task):
-            yield requires
-
-    def get_video_duration(self, youtube_id):
-        """
-        For youtube videos, queries Google API for video duration information.
-
-        This returns an "unknown" duration flag if no API key has been defined, or if the query fails.
-        """
-        duration = VIDEO_UNKNOWN_DURATION
-        if self.api_key is None:
-            return duration
-
-        # Slow: self.incr_counter(self.counter_category_name, 'Subset Calls to Youtube API', 1)
-        video_file = None
-        try:
-            video_url = "https://www.googleapis.com/youtube/v3/videos?id={0}&part=contentDetails&key={1}".format(
-                youtube_id, self.api_key
-            )
-            video_file = urllib.urlopen(video_url)
-            content = json.load(video_file)
-            items = content.get('items', [])
-            if len(items) > 0:
-                duration_str = items[0].get(
-                    'contentDetails', {'duration': 'MISSING_CONTENTDETAILS'}
-                ).get('duration', 'MISSING_DURATION')
-                matcher = re.match(r'PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?', duration_str)
-                if not matcher:
-                    log.error('Unable to parse duration returned for video %s: %s', youtube_id, duration_str)
-                    # Slow: self.incr_counter(self.counter_category_name, 'Quality Unparseable Response From Youtube API', 1)
-                else:
-                    duration_secs = int(matcher.group('hours') or 0) * 3600
-                    duration_secs += int(matcher.group('minutes') or 0) * 60
-                    duration_secs += int(matcher.group('seconds') or 0)
-                    duration = duration_secs
-                    # Slow: self.incr_counter(self.counter_category_name, 'Subset Calls to Youtube API Succeeding', 1)
-            else:
-                log.error('Unable to find items in response to duration request for youtube video: %s', youtube_id)
-                # Slow: self.incr_counter(self.counter_category_name, 'Quality No Items In Response From Youtube API', 1)
-        except Exception:  # pylint: disable=broad-except
-            log.exception("Unrecognized response from Youtube API")
-            # Slow: self.incr_counter(self.counter_category_name, 'Quality Unrecognized Response From Youtube API', 1)
-        finally:
-            if video_file is not None:
-                video_file.close()
-
-        return duration
 
 
 class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlTableInsertTask):

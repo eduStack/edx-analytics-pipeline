@@ -2,28 +2,24 @@
 Determine the number of users in each country are enrolled in each course.
 """
 import datetime
-import gzip
 import logging
-import textwrap
-from collections import defaultdict
 import tempfile
+from collections import defaultdict
 
 import luigi
 import pandas as pd
-from luigi.hive import HiveQueryTask
-from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
-from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
-from edx.analytics.tasks.common.mysql_load import MysqlTableTask, get_mysql_query_results
+
+from edx.analytics.tasks.common.mysql_load import MysqlTableTask
 from edx.analytics.tasks.common.pathutil import (
-    EventLogSelectionDownstreamMixin, EventLogSelectionMixin, PathSelectionByDateIntervalTask
+    EventLogSelectionDownstreamMixin
 )
 from edx.analytics.tasks.util import eventlog
+from edx.analytics.tasks.util.data import LoadDataFromDatabaseTask, LoadEventFromMongoTask
 from edx.analytics.tasks.util.decorators import workflow_entry_point
 from edx.analytics.tasks.util.geolocation import GeolocationDownstreamMixin, GeolocationMixin
-from edx.analytics.tasks.util.hive import BareHiveTableTask, HivePartitionTask, WarehouseMixin, hive_database_name
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.util.record import DateField, IntegerField, Record, StringField
-from edx.analytics.tasks.util.url import ExternalURL, UncheckedExternalURL, get_target_from_url, url_path_join
+from edx.analytics.tasks.util.url import ExternalURL
 
 try:
     import pygeoip
@@ -96,81 +92,65 @@ class LastCountryOfUserRecord(Record):
     username = StringField(length=255, description="Username of user with country information.")
 
 
-class LastCountryOfUserEventLogSelectionTask(LastCountryOfUserDownstreamMixin, EventLogSelectionMixin, luigi.Task):
-    completed = False
-    batch_counter_default = 1
-    _counter_dict = {}
-
+class LastCountryOfUserEventLogSelectionTask(LastCountryOfUserDownstreamMixin, LoadEventFromMongoTask):
     counter_category_name = 'LastCountryOfUser Events'
 
-    # FILEPATH_PATTERN should match the output files defined by output_path_for_key().
-    FILEPATH_PATTERN = '.*?last_ip_of_user_(?P<date>\\d{4}-\\d{2}-\\d{2})'
-
     def __init__(self, *args, **kwargs):
-        super(LastCountryOfUserEventLogSelectionTask, self).__init__(*args, **kwargs)
+        LastCountryOfUserDownstreamMixin.__init__(self, *args, **kwargs)
+        LoadEventFromMongoTask.__init__(self, *args, **kwargs)
+        self.attempted_removal = True
 
-        self.overwrite_from_date = self.interval.date_b - datetime.timedelta(days=self.overwrite_n_days)
+    def event_filter(self):
+        filter = {
+            '$and': [
+                {'timestamp': {'$lte': self.upper_bound_date_timestamp}},
+                {'timestamp': {'$gte': self.lower_bound_date_timestamp}},
+            ]}
+        return filter
 
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
+    def get_event_row_from_document(self, document):
+        value = self.get_event_and_date_string(document)
+        if value is None:
+            return
+        event, date_string = value
 
-    def get_raw_events_from_log_file(self, input_file):
-        raw_events = []
-        for line in input_file:
-            value = self.get_event_and_date_string(line)
-            if value is None:
-                continue
-            event, date_string = value
+        username = eventlog.get_event_username(event)
+        if not username:
+            return
 
-            username = eventlog.get_event_username(event)
-            if not username:
-                continue
+        # Get timestamp instead of date string, so we get the latest ip
+        # address for events on the same day.
+        timestamp = eventlog.get_event_time_string(event)
+        if not timestamp:
+            return
 
-            # Get timestamp instead of date string, so we get the latest ip
-            # address for events on the same day.
-            timestamp = eventlog.get_event_time_string(event)
-            if not timestamp:
-                continue
+        ip_address = event.get('ip')
+        if not ip_address:
+            log.warning("No ip_address found for user '%s' on '%s'.", username, timestamp)
+            return
 
-            ip_address = event.get('ip')
-            if not ip_address:
-                log.warning("No ip_address found for user '%s' on '%s'.", username, timestamp)
-                continue
+        # Get the course_id from context, if it happens to be present.
+        # It's okay if it isn't.
 
-            # Get the course_id from context, if it happens to be present.
-            # It's okay if it isn't.
+        # (Not sure if there are particular types of course
+        # interaction we care about, but we might want to only collect
+        # the course_id off of explicit events, and ignore implicit
+        # events as not being "real" interactions with course content.
+        # Or maybe we add a flag indicating explicit vs. implicit, so
+        # that this can be better teased apart.  For example, we could
+        # use the latest explicit event for a course, but if there are
+        # none, then use the latest implicit event for the course, and
+        # if there are none, then use the latest overall event.)
+        course_id = eventlog.get_course_id(event)
 
-            # (Not sure if there are particular types of course
-            # interaction we care about, but we might want to only collect
-            # the course_id off of explicit events, and ignore implicit
-            # events as not being "real" interactions with course content.
-            # Or maybe we add a flag indicating explicit vs. implicit, so
-            # that this can be better teased apart.  For example, we could
-            # use the latest explicit event for a course, but if there are
-            # none, then use the latest implicit event for the course, and
-            # if there are none, then use the latest overall event.)
-            course_id = eventlog.get_course_id(event)
+        # For multi-output, we will generate a single file for each key value.
+        # When looking at location for user in a course, we don't want to have
+        # an output file per course per date, so just use date as the key,
+        # and have a single file representing all events on the date.
+        event_row = (date_string, timestamp, ip_address, course_id, username)
+        return event_row
 
-            # For multi-output, we will generate a single file for each key value.
-            # When looking at location for user in a course, we don't want to have
-            # an output file per course per date, so just use date as the key,
-            # and have a single file representing all events on the date.
-            event_row = (date_string, timestamp, ip_address, course_id, username)
-
-            raw_events.append(event_row)
-        return raw_events
-
-    def output(self):
-        raw_events = []
-        for log_file in luigi.task.flatten(self.input()):
-            with log_file.open('r') as temp_file:
-                with gzip.GzipFile(fileobj=temp_file) as input_file:
-                    log.info('reading log file={}'.format(input_file))
-                    events = self.get_raw_events_from_log_file(input_file)
-                    if not events:
-                        continue
-                    raw_events.extend(events)
+    def processing(self, raw_events):
         columns = ['date_string', 'timestamp', ' ip_address', 'course_id', ' username']
         # log.info('raw_events = {}'.format(raw_events))
         df = pd.DataFrame(data=raw_events, columns=columns)
@@ -199,57 +179,6 @@ class LastCountryOfUserEventLogSelectionTask(LastCountryOfUserDownstreamMixin, E
                 # value = [timestamp, ip_address, username, course_id]
                 batch_values.append((username, timestamp, ip_address))
             yield batch_values
-
-    def init_local(self):
-        self.lower_bound_date_string = self.interval.date_a.strftime('%Y-%m-%d')  # pylint: disable=no-member
-        self.upper_bound_date_string = self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
-
-    def run(self):
-        self.init_local()
-        log.info('LastCountryOfUserEventLogSelectionTask running')
-        super(LastCountryOfUserEventLogSelectionTask, self).run()
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        requires = super(LastCountryOfUserEventLogSelectionTask, self).requires()
-        if isinstance(requires, luigi.Task):
-            yield requires
-
-    def incr_counter(self, *args, **kwargs):
-        """ Increments a Hadoop counter
-
-        Since counters can be a bit slow to update, this batches the updates.
-        """
-        threshold = kwargs.get("threshold", self.batch_counter_default)
-        if len(args) == 2:
-            # backwards compatibility with existing hadoop jobs
-            group_name, count = args
-            key = (group_name,)
-        else:
-            group, name, count = args
-            key = (group, name)
-
-        ct = self._counter_dict.get(key, 0)
-        ct += count
-        if ct >= threshold:
-            new_arg = list(key) + [ct]
-            self._incr_counter(*new_arg)
-            ct = 0
-        self._counter_dict[key] = ct
-
-    def _incr_counter(self, *args):
-        """ Increments a Hadoop counter
-
-        Note that this seems to be a bit slow, ~1 ms. Don't overuse this function by updating very frequently.
-        """
-        if len(args) == 2:
-            # backwards compatibility with existing hadoop jobs
-            group_name, count = args
-            # log.debug('reporter:counter:%s,%s' % (group_name, count))
-        else:
-            group, name, count = args
-            # log.debug('reporter:counter:%s,%s,%s' % (group, name, count))
 
 
 class LastCountryOfUserDataTask(LastCountryOfUserDownstreamMixin, GeolocationMixin, luigi.Task):
@@ -425,21 +354,12 @@ class LastCountryPerCourseRecord(Record):
                                     description="Number ever enrolled in course whose current last-country code matches.")
 
 
-class AuthUserSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(AuthUserSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
+class AuthUserSelectionTask(LoadDataFromDatabaseTask):
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
                 SELECT 
+                    id,
                     username,
                     last_login,
                     date_joined,
@@ -450,21 +370,6 @@ class AuthUserSelectionTask(DatabaseImportMixin, luigi.Task):
                 FROM auth_user
             """
         return query
-
-    def output(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('AuthUserSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportAuthUserTask(MysqlTableTask):
@@ -485,6 +390,7 @@ class ImportAuthUserTask(MysqlTableTask):
     @property
     def columns(self):
         return [
+            ('user_id', 'INT'),
             ('username', 'VARCHAR(255)'),
             ('last_login', 'TIMESTAMP'),
             ('date_joined', 'TIMESTAMP'),
@@ -509,19 +415,9 @@ class ImportAuthUserTask(MysqlTableTask):
         yield self.requires_local()
 
 
-class StudentCourseEnrollmentSelectionTask(DatabaseImportMixin, luigi.Task):
-    completed = False
-
-    def __init__(self, *args, **kwargs):
-        super(StudentCourseEnrollmentSelectionTask, self).__init__(*args, **kwargs)
-
-    def complete(self):
-        return self.completed
-        # return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
+class StudentCourseEnrollmentSelectionTask(LoadDataFromDatabaseTask):
     @property
-    def insert_query(self):
-        """The query builder that controls the structure and fields inserted into the new table."""
+    def query(self):
         query = """
                 SELECT 
                     user_id,
@@ -532,21 +428,6 @@ class StudentCourseEnrollmentSelectionTask(DatabaseImportMixin, luigi.Task):
                 FROM student_courseenrollment
             """
         return query
-
-    def output(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-
-    def run(self):
-        log.info('StudentCourseEnrollmentSelectionTask running')
-        if not self.completed:
-            self.completed = True
-
-    def requires(self):
-        yield ExternalURL(url=self.credentials)
 
 
 class ImportStudentCourseEnrollmentTask(MysqlTableTask):

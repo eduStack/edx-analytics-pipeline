@@ -2,7 +2,7 @@ Open edX Data Pipeline(small/middle scale version)
 ======================
 A data pipeline for analyzing Open edX data. This is a batch analysis engine that is capable of running complex data processing workflows.
 
-Based on the official implements, replace hadoop tools from code, only use mongo+pands+msyql implement analytics tasks for small scale user.
+Based on the official implements, replace hadoop tools from code, only use mongo+pandas+msyql implement analytics tasks for small scale user.
 
 QQ Group:106781163
 

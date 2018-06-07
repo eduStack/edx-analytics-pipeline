@@ -125,3 +125,33 @@ remote-task SetupTest \
 #  --override-config $HOME/edx-analytics-pipeline/config/devstack.cfg
 
 ```
+
+Launch Task shell script(Lcoal)
+-----------------
+```
+INTERVAL = yyyy-MM-DD-yyyy-MM-DD
+N_DAYS = X
+/var/lib/analytics-tasks/analyticstack/venv/bin/launch-task HylImportEnrollmentsIntoMysql --interval $INTERVAL  --overwrite-n-days $N_DAYS --overwrite-mysql --local-scheduler
+
+/var/lib/analytics-tasks/analyticstack/venv/bin/launch-task HylInsertToMysqlCourseActivityTask  --end-date $INTERVAL  --overwrite-n-days $N_DAYS --overwrite-mysql --local-scheduler
+
+/var/lib/analytics-tasks/analyticstack/venv/bin/launch-task HylInsertToMysqlAllVideoTask --interval $INTERVAL  --overwrite-n-days $N_DAYS  --local-scheduler
+
+/var/lib/analytics-tasks/analyticstack/venv/bin/launch-task HylInsertToMysqlCourseEnrollByCountryWorkflow --interval $INTERVAL  --overwrite-n-days $N_DAYS  --overwrite --local-scheduler
+```
+
+Launch Task shell script(Remote)
+-----------------
+```
+TASK_NAME and TASK_ARGS same as local script
+# be sure in virtual env
+remote-task TASK_NAME TASK_ARGS \
+    --repo https://github.com/956237586/edx-analytics-pipeline.git \
+    --branch master \
+    --host localhost \
+    --user edustack \
+    --sudo-user edustack \
+    --remote-name analyticstack \
+    --local-scheduler \
+    --wait
+```

@@ -23,9 +23,7 @@ try:
 except ImportError:
     AwsHttpConnection = None
 
-
 log = logging.getLogger(__name__)
-
 
 # These are standard HTTP status codes used by elasticsearch to represent various error conditions
 HTTP_CONNECT_TIMEOUT_STATUS_CODE = 408
@@ -34,18 +32,18 @@ HTTP_SERVICE_UNAVAILABLE_STATUS_CODE = 503
 HTTP_GATEWAY_TIMEOUT_STATUS_CODE = 504
 
 
-class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
+class ElasticsearchIndexTaskMixin(OverwriteOutputMixin):
     """
-    Index a stream of documents in an elasticsearch index.
+        Index a stream of documents in an elasticsearch index.
 
-    This task is intended to do the following:
-    * Create a new index that is unique to this task run (all significant parameters).
-    * Load all of the documents into this unique index.
-    * If the alias is already pointing at one or more indexes, switch it so that it only points at this newly loaded
-      index.
-    * Delete any indexes that were previously pointed at by the alias, leaving only the newly loaded index.
+        This task is intended to do the following:
+        * Create a new index that is unique to this task run (all significant parameters).
+        * Load all of the documents into this unique index.
+        * If the alias is already pointing at one or more indexes, switch it so that it only points at this newly loaded
+          index.
+        * Delete any indexes that were previously pointed at by the alias, leaving only the newly loaded index.
 
-    """
+        """
 
     host = luigi.Parameter(
         is_list=True,
@@ -110,21 +108,13 @@ class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
     # These attributes should be overridden, but don't need to be.
     settings = {}
     properties = {}
+    index = alias
 
-    def __init__(self, *args, **kwargs):
-        super(ElasticsearchIndexTask, self).__init__(*args, **kwargs)
-
-        self.other_reduce_tasks = self.n_reduce_tasks
-        if self.indexing_tasks is not None:
-            self.n_reduce_tasks = self.indexing_tasks
-
+    def __init__(self):
         self.batch_index = 0
-        self.index = self.alias + '_' + str(hash(self.update_id()))
         self.indexes_for_alias = set()
 
-    def init_local(self):
-        super(ElasticsearchIndexTask, self).init_local()
-
+    def init_es_client(self):
         elasticsearch_client = self.create_elasticsearch_client()
 
         # Find all indexes that are referred to by this alias (currently). These will be deleted after a successful
@@ -188,10 +178,7 @@ class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
             **kwargs
         )
 
-    def mapper(self, line):
-        yield (random.randrange(int(self.n_reduce_tasks)), line.rstrip('\r\n'))
-
-    def reducer(self, _key, lines):
+    def update_index(self, lines):
         """
         Given a batch of records, transmit them to the elasticsearch cluster to be indexed.
 
@@ -204,7 +191,6 @@ class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
         first_batch = True
         while True:
             bulk_action_batch = self.next_bulk_action_batch(document_iterator)
-
             if not bulk_action_batch:
                 break
 
@@ -223,7 +209,6 @@ class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
 
         # Luigi requires the reducer to actually return something, so we just return empty strings that are written
         # to a temp file in HDFS that is immediately cleaned up after the job finishes.
-        yield ('', '')
 
     def next_bulk_action_batch(self, document_iterator):
         """
@@ -293,7 +278,7 @@ class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
             attempts += 1
             if attempts < self.max_attempts:
                 sleep_duration = 2 ** attempts
-                self.incr_counter('Elasticsearch', 'Rejected Batches', 1)
+                # self.incr_counter('Elasticsearch', 'Rejected Batches', 1)
                 log.warn(
                     'Batch of records rejected. Sleeping for %d seconds before retrying.',
                     sleep_duration
@@ -348,30 +333,6 @@ class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
         """
         raise NotImplementedError
 
-    def extra_modules(self):
-        import urllib3
-
-        packages = [elasticsearch, urllib3]
-
-        return packages
-
-    def jobconfs(self):
-        jcs = super(ElasticsearchIndexTask, self).jobconfs()
-        jcs.append('mapred.reduce.tasks.speculative.execution=false')
-        return jcs
-
-    def update_id(self):
-        """A unique identifier for this task instance that is used to determine if it should be run again."""
-        return self.task_id
-
-    def output(self):
-        return ElasticsearchTarget(
-            client=self.create_elasticsearch_client(),
-            index=self.alias,
-            doc_type=self.doc_type,
-            update_id=self.update_id()
-        )
-
     def commit(self):
         """
         If all documents have been loaded successfully, make the changes visible to users.
@@ -392,9 +353,6 @@ class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
         actions.append({"add": {"index": self.index, "alias": self.alias}})
         elasticsearch_client.indices.update_aliases({"actions": actions})
 
-        # Update the luigi metadata to indicate that the task ran successfully.
-        self.output().touch()
-
         # Attempt to remove any old indexes that are now no longer user-visible.
         for old_index in old_indexes:
             elasticsearch_client.indices.delete(index=old_index)
@@ -410,6 +368,53 @@ class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
         except Exception:  # pylint: disable=broad-except
             log.exception("Unable to rollback the elasticsearch load.")
 
+    def incr_counter(self, category_name, counter_name, count):
+        pass
+
+
+class ElasticsearchIndexTask(ElasticsearchIndexTaskMixin, MapReduceJobTask):
+    def __init__(self, *args, **kwargs):
+        super(ElasticsearchIndexTaskMixin, self).__init__(*args, **kwargs)
+        self.index = self.alias + '_' + str(hash(self.update_id()))
+        self.other_reduce_tasks = self.n_reduce_tasks
+        if self.indexing_tasks is not None:
+            self.n_reduce_tasks = self.indexing_tasks
+
+    def mapper(self, line):
+        yield (random.randrange(int(self.n_reduce_tasks)), line.rstrip('\r\n'))
+
+    def reducer(self, _key, lines):
+        self.update_index(lines)
+        yield ('', '')
+
+    def update_id(self):
+        """A unique identifier for this task instance that is used to determine if it should be run again."""
+        return self.task_id
+
+    def output(self):
+        return ElasticsearchTarget(
+            client=self.create_elasticsearch_client(),
+            index=self.alias,
+            doc_type=self.doc_type,
+            update_id=self.update_id()
+        )
+
+    def init_local(self):
+        super(ElasticsearchIndexTask, self).init_local()
+        self.init_es_client()
+
+    def jobconfs(self):
+        jcs = super(ElasticsearchIndexTask, self).jobconfs()
+        jcs.append('mapred.reduce.tasks.speculative.execution=false')
+        return jcs
+
+    def extra_modules(self):
+        import urllib3
+
+        packages = [elasticsearch, urllib3]
+
+        return packages
+
     def run(self):
         try:
             super(ElasticsearchIndexTask, self).run()
@@ -418,6 +423,8 @@ class ElasticsearchIndexTask(OverwriteOutputMixin, MapReduceJobTask):
             raise
         else:
             self.commit()
+            # Update the luigi metadata to indicate that the task ran successfully.
+            self.output().touch()
 
 
 class IndexingError(RuntimeError):

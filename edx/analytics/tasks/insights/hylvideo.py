@@ -16,7 +16,7 @@ from luigi.hive import HiveQueryTask
 from luigi.parameter import DateIntervalParameter
 
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
-from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, IncrementalMysqlInsertTask, get_mysql_query_results
+from edx.analytics.tasks.common.mysql_load import MysqlTableTask, IncrementalMysqlTableInsertTask, get_mysql_query_results
 from edx.analytics.tasks.common.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
 from edx.analytics.tasks.util import eventlog
 from edx.analytics.tasks.util.decorators import workflow_entry_point
@@ -616,7 +616,7 @@ class VideoUsageTask(VideoTableDownstreamMixin, EventLogSelectionMixin, luigi.Ta
         return duration
 
 
-class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTask):
+class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlTableInsertTask):
     dropoff_threshold = luigi.FloatParameter(config_path={'section': 'videos', 'name': 'dropoff_threshold'})
 
     def __init__(self, *args, **kwargs):
@@ -631,10 +631,6 @@ class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTas
     @property
     def table(self):  # pragma: no cover
         return 'video_usage'
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def columns(self):  # pragma: no cover
@@ -678,7 +674,7 @@ class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTas
         for raw_event in require.output():
             events.append(raw_event)
 
-        log.info('events = {}'.format(events))
+        # log.info('events = {}'.format(events))
         columns = ['username', 'course_id', 'encoded_module_id', 'video_duration', 'start_timestamp', 'start_offset',
                    'end_time', 'event_type']
 
@@ -766,14 +762,15 @@ class VideoTimelineDataTask(VideoTableDownstreamMixin, IncrementalMysqlInsertTas
         )
 
     def requires(self):
-        yield super(VideoTimelineDataTask, self).requires()['credentials']
+        for req in super(VideoTimelineDataTask, self).requires():
+            yield req
 
         requires_local = self.requires_local()
         if isinstance(requires_local, luigi.Task):
             yield requires_local
 
 
-class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, MysqlInsertTask):
+class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, MysqlTableTask):
     """Insert information about video timelines from a Hive table into MySQL."""
 
     overwrite = luigi.BooleanParameter(
@@ -794,10 +791,6 @@ class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, MysqlInsertTask)
         return 'video_timeline'
 
     @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
-
-    @property
     def columns(self):  # pragma: no cover
         return VideoTimelineRecord.get_sql_schema()
 
@@ -812,20 +805,6 @@ class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, MysqlInsertTask)
             FROM video_usage
         """
 
-    def rows(self):
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        for row in query_result:
-            yield row
-        #
-        # pipeline_video_id = StringField(length=255, nullable=False)
-        # segment = IntegerField()
-        # num_users = IntegerField()
-        # num_views = IntegerField()
-
-        # yield ('test-pipeline_video_id', 1, 2, 3)
-
     @property
     def indexes(self):  # pragma: no cover
         return [
@@ -833,7 +812,8 @@ class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, MysqlInsertTask)
         ]
 
     def requires(self):
-        yield super(InsertToMysqlVideoTimelineTask, self).requires()['credentials']
+        for req in super(InsertToMysqlVideoTimelineTask, self).requires():
+            yield req
         # the process that generates the source table used by this query
         yield (
             VideoTimelineDataTask(
@@ -845,7 +825,7 @@ class InsertToMysqlVideoTimelineTask(VideoTableDownstreamMixin, MysqlInsertTask)
         )
 
 
-class InsertToMysqlVideoTask(VideoTableDownstreamMixin, MysqlInsertTask):
+class InsertToMysqlVideoTask(VideoTableDownstreamMixin, MysqlTableTask):
     """Insert summary information into the video table in MySQL."""
 
     overwrite = luigi.BooleanParameter(
@@ -864,10 +844,6 @@ class InsertToMysqlVideoTask(VideoTableDownstreamMixin, MysqlInsertTask):
     @property
     def table(self):  # pragma: no cover
         return 'video'
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def columns(self):  # pragma: no cover
@@ -911,7 +887,8 @@ class InsertToMysqlVideoTask(VideoTableDownstreamMixin, MysqlInsertTask):
         ]
 
     def requires(self):
-        yield super(InsertToMysqlVideoTask, self).requires()['credentials']
+        for req in super(InsertToMysqlVideoTask, self).requires():
+            yield req
         yield (
             VideoTimelineDataTask(
                 source=self.source,

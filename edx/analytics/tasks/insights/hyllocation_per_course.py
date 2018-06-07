@@ -11,9 +11,9 @@ import tempfile
 import luigi
 import pandas as pd
 from luigi.hive import HiveQueryTask
-from edx.analytics.tasks.common.sqoop import SqoopImportMixin
+from edx.analytics.tasks.insights.database_imports import DatabaseImportMixin
 from edx.analytics.tasks.common.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
-from edx.analytics.tasks.common.mysql_load import MysqlInsertTask, get_mysql_query_results
+from edx.analytics.tasks.common.mysql_load import MysqlTableTask, get_mysql_query_results
 from edx.analytics.tasks.common.pathutil import (
     EventLogSelectionDownstreamMixin, EventLogSelectionMixin, PathSelectionByDateIntervalTask
 )
@@ -327,7 +327,6 @@ class LastCountryOfUserDataTask(LastCountryOfUserDownstreamMixin, GeolocationMix
             self.completed = True
         # self.final_reducer()
 
-
     def geolocation_data_target(self):
         return ExternalURL(self.geolocation_data)
 
@@ -339,7 +338,7 @@ class LastCountryOfUserDataTask(LastCountryOfUserDownstreamMixin, GeolocationMix
         yield self.requires_local()
 
 
-class LastCountryOfUser(LastCountryOfUserDownstreamMixin, MysqlInsertTask):
+class LastCountryOfUser(LastCountryOfUserDownstreamMixin, MysqlTableTask):
     """
     Copy the last_country_of_user table from Map-Reduce into MySQL.
     """
@@ -351,10 +350,6 @@ class LastCountryOfUser(LastCountryOfUserDownstreamMixin, MysqlInsertTask):
     @property
     def columns(self):
         return LastCountryOfUserRecord.get_sql_schema()
-
-    @property
-    def insert_source_task(self):
-        return None
 
     def rows(self):
         require = self.requires_local()
@@ -375,11 +370,12 @@ class LastCountryOfUser(LastCountryOfUserDownstreamMixin, MysqlInsertTask):
         )
 
     def requires(self):
-        yield super(LastCountryOfUser, self).requires()['credentials']
+        for req in super(LastCountryOfUser, self).requires():
+            yield req
         yield self.requires_local()
 
 
-class InsertToMysqlLastCountryOfUserTask(LastCountryOfUserDownstreamMixin, MysqlInsertTask):
+class InsertToMysqlLastCountryOfUserTask(LastCountryOfUserDownstreamMixin, MysqlTableTask):
     """
     Copy the last_country_of_user table from Map-Reduce into MySQL.
     """
@@ -391,10 +387,6 @@ class InsertToMysqlLastCountryOfUserTask(LastCountryOfUserDownstreamMixin, Mysql
     @property
     def columns(self):
         return LastCountryOfUserRecord.get_sql_schema()
-
-    @property
-    def insert_source_task(self):
-        return None
 
     def rows(self):
         require = self.requires_local()
@@ -415,7 +407,8 @@ class InsertToMysqlLastCountryOfUserTask(LastCountryOfUserDownstreamMixin, Mysql
         )
 
     def requires(self):
-        yield super(InsertToMysqlLastCountryOfUserTask, self).requires()['credentials']
+        for req in super(InsertToMysqlLastCountryOfUserTask, self).requires():
+            yield req
         yield self.requires_local()
 
 
@@ -432,8 +425,11 @@ class LastCountryPerCourseRecord(Record):
                                     description="Number ever enrolled in course whose current last-country code matches.")
 
 
-class AuthUserSelectionTask(SqoopImportMixin, luigi.Task):
+class AuthUserSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
+
+    def __init__(self, *args, **kwargs):
+        super(AuthUserSelectionTask, self).__init__(*args, **kwargs)
 
     def complete(self):
         return self.completed
@@ -471,14 +467,10 @@ class AuthUserSelectionTask(SqoopImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportAuthUserTask(MysqlInsertTask):
+class ImportAuthUserTask(MysqlTableTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportAuthUserTask, self).__init__(*args, **kwargs)
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def table(self):  # pragma: no cover
@@ -512,15 +504,16 @@ class ImportAuthUserTask(MysqlInsertTask):
         return AuthUserSelectionTask()
 
     def requires(self):
-        yield super(ImportAuthUserTask, self).requires()['credentials']
-
-        requires_local = self.requires_local()
-        if isinstance(requires_local, luigi.Task):
-            yield requires_local
+        for req in super(ImportAuthUserTask, self).requires():
+            yield req
+        yield self.requires_local()
 
 
-class StudentCourseEnrollmentSelectionTask(SqoopImportMixin, luigi.Task):
+class StudentCourseEnrollmentSelectionTask(DatabaseImportMixin, luigi.Task):
     completed = False
+
+    def __init__(self, *args, **kwargs):
+        super(StudentCourseEnrollmentSelectionTask, self).__init__(*args, **kwargs)
 
     def complete(self):
         return self.completed
@@ -541,9 +534,9 @@ class StudentCourseEnrollmentSelectionTask(SqoopImportMixin, luigi.Task):
         return query
 
     def output(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
         query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
                                                query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
         for row in query_result:
             yield row
 
@@ -556,14 +549,10 @@ class StudentCourseEnrollmentSelectionTask(SqoopImportMixin, luigi.Task):
         yield ExternalURL(url=self.credentials)
 
 
-class ImportStudentCourseEnrollmentTask(MysqlInsertTask):
+class ImportStudentCourseEnrollmentTask(MysqlTableTask):
 
     def __init__(self, *args, **kwargs):
         super(ImportStudentCourseEnrollmentTask, self).__init__(*args, **kwargs)
-
-    @property
-    def insert_source_task(self):  # pragma: no cover
-        return None
 
     @property
     def table(self):  # pragma: no cover
@@ -595,15 +584,13 @@ class ImportStudentCourseEnrollmentTask(MysqlInsertTask):
         return StudentCourseEnrollmentSelectionTask()
 
     def requires(self):
-        yield super(ImportStudentCourseEnrollmentTask, self).requires()['credentials']
-
-        requires_local = self.requires_local()
-        if isinstance(requires_local, luigi.Task):
-            yield requires_local
+        for req in super(ImportStudentCourseEnrollmentTask, self).requires():
+            yield req
+        yield self.requires_local()
 
 
 class InsertToMysqlLastCountryPerCourseTask(LastCountryOfUserDownstreamMixin,
-                                            MysqlInsertTask):  # pylint: disable=abstract-method
+                                            MysqlTableTask):  # pylint: disable=abstract-method
     """
     Define course_enrollment_location_current table.
     """
@@ -626,10 +613,6 @@ class InsertToMysqlLastCountryPerCourseTask(LastCountryOfUserDownstreamMixin,
         ]
 
     @property
-    def insert_source_task(self):
-        return None
-
-    @property
     def insert_query(self):
         """The query builder that controls the structure and fields inserted into the new table."""
         query = """
@@ -646,15 +629,9 @@ class InsertToMysqlLastCountryPerCourseTask(LastCountryOfUserDownstreamMixin,
         """
         return query
 
-    def rows(self):
-        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
-                                               query=self.insert_query)
-        log.info('query_sql = [{}]'.format(self.insert_query))
-        for row in query_result:
-            yield row
-
     def requires(self):
-        yield super(InsertToMysqlLastCountryPerCourseTask, self).requires()['credentials']
+        for req in super(InsertToMysqlLastCountryPerCourseTask, self).requires():
+            yield req
         yield ImportStudentCourseEnrollmentTask()
         yield ImportAuthUserTask()
         yield LastCountryOfUser(

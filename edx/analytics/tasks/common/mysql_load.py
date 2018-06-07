@@ -382,7 +382,6 @@ def get_mysql_query_results(credentials, database, query):
     """
     Executes a mysql query on the provided database and returns the results.
     """
-
     credentials_target = ExternalURL(url=credentials).output()
     cred = None
     with credentials_target.open('r') as credentials_file:
@@ -516,3 +515,59 @@ class IncrementalMysqlInsertTask(MysqlInsertTask):
         A string that specifies the data to overwrite, this will be the entire WHERE clause of the generated query.
         """
         return None
+
+
+class MysqlTableTask(MysqlInsertTask):
+    @property
+    def table(self):
+        raise NotImplementedError
+
+    @property
+    def columns(self):
+        raise NotImplementedError
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def insert_query(self):
+        return ''
+
+    def rows(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        for row in query_result:
+            yield row
+
+    def requires(self):
+        yield super(MysqlTableTask, self).requires()['credentials']
+
+
+class IncrementalMysqlTableInsertTask(IncrementalMysqlInsertTask):
+    @property
+    def table(self):
+        raise NotImplementedError
+
+    @property
+    def columns(self):
+        raise NotImplementedError
+
+    @property
+    def insert_source_task(self):  # pragma: no cover
+        return None
+
+    @property
+    def insert_query(self):
+        raise NotImplementedError
+
+    def rows(self):
+        log.info('query_sql = [{}]'.format(self.insert_query))
+        query_result = get_mysql_query_results(credentials=self.credentials, database=self.database,
+                                               query=self.insert_query)
+        for row in query_result:
+            yield row
+
+    def requires(self):
+        yield super(IncrementalMysqlTableInsertTask, self).requires()['credentials']

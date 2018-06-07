@@ -2,25 +2,13 @@ Open edX Data Pipeline(small/middle scale version)
 ======================
 A data pipeline for analyzing Open edX data. This is a batch analysis engine that is capable of running complex data processing workflows.
 
+Based on the official implements, replace hadoop tools from code, only use mongo+pands+msyql implement analytics tasks for small scale user.
+
+QQ Group:106781163
+
 The data pipeline takes large amounts of raw data, analyzes it and produces higher value outputs that are used by various downstream tools.
 
 The primary consumer of this data is [Open edX Insights](http://edx.readthedocs.io/projects/edx-insights/en/latest/).
-
-It is also used to generate a variety of packaged outputs for research, business intelligence and other reporting.
-
-It gathers input from a variety of sources including (but not limited to):
-
-* [Tracking log](http://edx.readthedocs.io/projects/devdata/en/latest/internal_data_formats/event_list.html) files - This is the primary data source.
-* LMS database
-* Otto database
-* LMS APIs (course blocks, course listings)
-
-It outputs to:
-
-* S3 - CSV reports, packaged exports
-* MySQL - This is known as the "result store" and is consumed by Insights
-* Elasticsearch - This is also used by Insights
-* Vertica - This is used for business intelligence and reporting purposes
 
 This tool uses [spotify/luigi](https://github.com/spotify/luigi) as the core of the workflow engine.
 
@@ -28,8 +16,6 @@ Data transformation and analysis is performed with the assistance of the followi
 
 * Python
 * [Pandas](http://pandas.pydata.org/)
-* [Hive](https://hive.apache.org/)
-* [Hadoop](http://hadoop.apache.org/)
 * [Sqoop](http://sqoop.apache.org/)
 
 The data pipeline is designed to be invoked on a periodic basis by an external scheduler. This can be cron, jenkins or any other system that can periodically run shell commands.
@@ -79,3 +65,63 @@ before we can accept your contribution. See our
 [CONTRIBUTING](https://github.com/edx/edx-platform/blob/master/CONTRIBUTING.rst)
 file for more information -- it also contains guidelines for how to maintain
 high code quality, which will make your contribution more likely to be accepted.
+
+Setup shell script
+-----------------
+
+```
+#!/bin/bash
+LMS_HOSTNAME="https://lms.mysite.org"
+INSIGHTS_HOSTNAME="http://127.0.0.1:8110"  # Change this to the externally visible domain and scheme for your Insights install, ideally HTTPS
+DB_USERNAME="read_only"
+DB_HOST="localhost"
+DB_PASSWORD="password"
+DB_PORT="3306"
+# Use Tsinghua mirror
+PIP_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
+# Run this script to set up the analytics pipeline
+echo "Assumes that there's a tracking.log file in \$HOME"
+sleep 2
+
+echo "Create ssh key"
+ssh-keygen -t rsa -f ~/.ssh/id_rsa -P ''
+echo >> ~/.ssh/authorized_keys # Make sure there's a newline at the end
+cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+# check: ssh localhost "echo It worked!" -- make sure it works.
+echo "Install needed packages"
+sudo apt-get update
+sudo apt-get install -y git python-pip python-dev libmysqlclient-dev
+sudo pip install -i $PIP_MIRROR virtualenv
+
+# Make a new virtualenv -- otherwise will have conflicts
+echo "Make pipeline virtualenv"
+virtualenv pipeline
+. pipeline/bin/activate
+
+echo "Check out pipeline"
+git clone https://github.com/956237586/edx-analytics-pipeline.git
+cd edx-analytics-pipeline
+make bootstrap
+# HACK: make ansible do this
+cat <<EOF > /edx/etc/edx-analytics-pipeline/input.json
+{"username": $DB_USERNAME, "host": $DB_HOST, "password": $DB_PASSWORD, "port": $DB_PORT}
+EOF
+
+echo "Run the pipeline"
+# Ensure you're in the pipeline virtualenv
+# --user ssh username
+# sudo user need no password
+# --sudo-user sudoUser
+remote-task SetupTest \
+    --repo https://github.com/956237586/edx-analytics-pipeline.git \
+    --branch master \
+    --host localhost \
+    --user edustack \
+    --sudo-user edustack \
+    --remote-name analyticstack \
+    --local-scheduler \
+    --wait
+# point to override-config
+#  --override-config $HOME/edx-analytics-pipeline/config/devstack.cfg
+
+```

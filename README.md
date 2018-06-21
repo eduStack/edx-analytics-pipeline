@@ -155,3 +155,85 @@ remote-task TASK_NAME TASK_ARGS \
     --local-scheduler \
     --wait
 ```
+
+Insights Configuration
+-----------------
+1.enable lms oauth2
+```
+/edx/app/edxapp/lms.env.json
+"ENABLE_OAUTH2_PROVIDER": true,
+"OAUTH_OIDC_ISSUER": "http://HOST/oauth2"
+"OAUTH_ENFORCE_SECURE": false,
+```
+2.add oauth2 client and trust it
+**MUST BE SUPER USER**
+http://LMS_HOST/admin/oauth2/client/
+http://LMS_HOST/admin/edx_oauth2_provider/trustedclient/
+
+3.change insights oauth2 conf
+/edx/etc/insights.yml
+SOCIAL_AUTH_EDX_OIDC_ID_TOKEN_DECRYPTION_KEY: SECRET
+SOCIAL_AUTH_EDX_OIDC_ISSUER: http://HOST/oauth2
+SOCIAL_AUTH_EDX_OIDC_KEY: OAUTH_2_KEY
+SOCIAL_AUTH_EDX_OIDC_LOGOUT_URL: http://HOST/logout
+SOCIAL_AUTH_EDX_OIDC_SECRET: SECRET
+SOCIAL_AUTH_EDX_OIDC_URL_ROOT: http://HOST/oauth2
+
+4.create mongo collection for tracking log
+edit `/etc/mongod.conf` disable auth
+```
+auth = false
+sudo service mongod restart
+
+mongo
+use insights
+db.createUser(
+  {
+    user: "insights",
+    pwd: "PASSWORD",
+    roles: [{ role: "readWrite", db: "insights" }]
+  }
+)
+```
+**REMEMBER CHANGE auth=true AFTER COLLECTION CREATED**
+
+5.create auth files
+/edx/etc/edx-analytics-pipeline/mongo.json
+{"username": "insights", "host": "localhost", "password": "PASSWORD", "port": 27017}
+/edx/etc/edx-analytics-pipeline/input.json
+{"username": "read_only", "host": "localhost", "password": "PASSWORD", "port": 3306}
+/edx/etc/edx-analytics-pipeline/output.json
+{"username": "pipeline001", "host": "localhost", "password": "PASSWORD", "port": 3306}
+
+6.add missing table in dashboard
+```
+mysql -u root -p
+
+use dashboard;
+CREATE TABLE `soapbox_message` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `message` longtext NOT NULL,
+  `is_global` tinyint(1) NOT NULL,
+  `is_active` tinyint(1) NOT NULL,
+  `url` varchar(255) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8
+```
+
+7.create pipeline configuration file
+override.cfg
+you can find template in `config/prod.cfg`
+**IMPORTANT SETTINGS BELOW**
+```
+[database-export]
+database = reports
+credentials = /edx/etc/edx-analytics-pipeline/output.json
+
+[database-import]
+database = edxapp
+credentials = /edx/etc/edx-analytics-pipeline/input.json
+destination = s3://fake/warehouse/
+
+[mongo]
+credentials = /edx/etc/edx-analytics-pipeline/mongo.json
+```

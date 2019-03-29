@@ -4,8 +4,6 @@ A data pipeline for analyzing Open edX data. This is a batch analysis engine tha
 
 Based on the official implements, replace hadoop tools from code, only use mongo+pandas+msyql implement analytics tasks for small scale user.
 
-QQ Group:106781163
-
 The data pipeline takes large amounts of raw data, analyzes it and produces higher value outputs that are used by various downstream tools.
 
 The primary consumer of this data is [Open edX Insights](http://edx.readthedocs.io/projects/edx-insights/en/latest/).
